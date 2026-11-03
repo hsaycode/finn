@@ -678,3 +678,20 @@ def test_a_wrong_page_citation_moves_to_where_the_figure_is():
     doc = docs.Doc("https://x/ar.pdf", ["nothing here", "Dues of Rs 47,148 lakhs are recoverable", "more"])
     assert research._page_holding("Dues of Rs 47,148 lakhs", doc, [1, 2, 3], 1) == 2
     assert research._page_holding("Dues of Rs 47,148 lakhs", doc, [1, 2, 3], 2) == 2
+
+
+def test_a_dotenv_file_fills_gaps_but_never_overrides(tmp_path, monkeypatch):
+    import finn
+
+    env = tmp_path / ".env"
+    env.write_text('# a comment\nFINN_TEST_A="from file"\nexport FINN_TEST_B=b\nFINN_TEST_C=file\nnot a line\n', encoding="utf-8")
+    monkeypatch.delenv("FINN_NO_DOTENV", raising=False)
+    monkeypatch.setenv("FINN_TEST_C", "real")
+    for name in ("FINN_TEST_A", "FINN_TEST_B"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(finn, "__file__", str(tmp_path / "finn" / "__init__.py"))
+    finn._load_env()
+    import os
+    assert os.environ["FINN_TEST_A"] == "from file" and os.environ["FINN_TEST_B"] == "b" and os.environ["FINN_TEST_C"] == "real"
+    for name in ("FINN_TEST_A", "FINN_TEST_B"):
+        os.environ.pop(name, None)

@@ -647,6 +647,10 @@ def annual_report_flags(c: screener.Company, log) -> dict | None:
                 x["rpt_note"] = None
             if x.get("rpt_note"):
                 x["rpt_page"] = _page_holding(x["rpt_note"], r["doc"], r["chosen"], x.get("rpt_page"))
+                # If its figures aren't on any page it could cite, nobody could check it, so it isn't shown.
+                cited_page = x["rpt_page"] if isinstance(x["rpt_page"], int) and 1 <= x["rpt_page"] <= len(r["doc"].pages) else None
+                if not cited_page or not E_numbers_in_source(x["rpt_note"], r["doc"].pages[cited_page - 1]):
+                    x["rpt_note"] = None
             if not x.get("contingent_crore"):
                 x.update(contingent_liabilities(r["doc"]) or {})
             if isinstance(x.get("auditor"), dict) and x["auditor"].get("emphasis") and not E_numbers_in_source(x["auditor"]["emphasis"], r["text"]):

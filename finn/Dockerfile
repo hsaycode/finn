@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 RUN pip install --no-cache-dir uv
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project --python 3.12
+RUN uv sync --frozen --no-dev --no-install-project --extra push --python 3.12
 COPY finn/ finn/
 COPY data/finn.db data/finn.db
 COPY --from=web /web/dist web/dist
@@ -21,4 +21,4 @@ ENV PORT=8000 FINN_REFRESH_MINUTES=30 MALLOC_ARENA_MAX=2
 # Spaces and similar hosts run the container as a non-root user.
 RUN mkdir -p data/cache && chmod -R a+rwX data
 EXPOSE 8000
-CMD ["sh", "-c", "uv run --frozen --no-dev --no-sync uvicorn finn.api:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uv run --frozen --no-dev --no-sync --extra push uvicorn finn.api:app --host 0.0.0.0 --port ${PORT}"]

@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import classify as C
-from . import chat, docs, llm, nse, pipeline, prices, promises, research
+from . import chat, docs, llm, nse, pipeline, prices, promises, push, research
 from . import transcripts as T
 from .enrich import numbers_in_source
 from .net import FetchError
@@ -459,6 +459,26 @@ def chat_message(message: str = Body(..., embed=True, min_length=1, max_length=4
     return chat.answer(message, ask_about, move, vol)
 
 
+@app.get("/api/push")
+def push_available():
+    return {"enabled": push.enabled(), "public_key": push.public_key() if push.enabled() else None}
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(subscription: dict = Body(..., embed=True), move: float = Body(5, embed=True), vol: float = Body(2, embed=True), muted: list[str] = Body([], embed=True)):
+    if not push.enabled():
+        raise HTTPException(404, "Notifications aren't set up on this server")
+    if not push.subscribe(subscription, move, vol, muted):
+        raise HTTPException(400, "That isn't a usable browser subscription")
+    return {"subscribed": True}
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(endpoint: str = Body(..., embed=True, max_length=800)):
+    push.unsubscribe(endpoint)
+    return {"subscribed": False}
+
+
 @app.get("/api/status")
 def status():
     conn = db()
@@ -486,6 +506,7 @@ def _refresh_loop() -> None:
         if age >= timedelta(minutes=minutes):
             try:
                 pipeline.refresh(days=min(age.days + 2, 45), log=lambda *_: None)
+                push.send_new(lambda move, vol, muted: alerts(move, vol, ",".join(muted), 3)["messages"])
             except Exception:
                 pass
         time.sleep(minutes * 60)

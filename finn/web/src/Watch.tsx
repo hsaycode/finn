@@ -9,6 +9,56 @@ const MUTABLE: [string, string][] = [
 const LOOKBACK = 30; // sessions
 const study = { filings: "2.8 lakh", companies: "2,284" };
 
+const toKey = (b64: string) => Uint8Array.from(atob(b64.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+
+/** Shown only once the server has notification keys and the browser can receive them. */
+function PhoneAlerts({ settings }: { settings: Settings }) {
+  const [key, setKey] = useState<string | null>(null);
+  const [on, setOn] = useState(false);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    api<{ enabled: boolean; public_key: string | null }>("/api/push").then((r) => r.enabled && setKey(r.public_key)).catch(() => {});
+    navigator.serviceWorker.ready.then((w) => w.pushManager.getSubscription()).then((s) => setOn(!!s)).catch(() => {});
+  }, []);
+
+  if (!key) return null;
+  const send = (subscription: PushSubscription) => api("/api/push/subscribe", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subscription: subscription.toJSON(), move: settings.movePct, vol: settings.volX, muted: settings.muted }),
+  });
+  const toggle = async () => {
+    setNote("");
+    try {
+      const worker = await navigator.serviceWorker.ready;
+      const current = await worker.pushManager.getSubscription();
+      if (current) {
+        await api("/api/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: current.endpoint }) });
+        await current.unsubscribe();
+        setOn(false);
+        return;
+      }
+      if ((await Notification.requestPermission()) !== "granted") {
+        setNote("Notifications are blocked for this site in your browser settings.");
+        return;
+      }
+      await send(await worker.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toKey(key) }));
+      setOn(true);
+    } catch {
+      setNote("That didn't work on this browser. On an iPhone, add FINN to your home screen first.");
+    }
+  };
+  return (
+    <section className="sec">
+      <h2>Phone notifications</h2>
+      <p className="meta">Top filings and anything crossing your limits, even with the app closed. They use the limits above as they stood when you turned this on.</p>
+      <button className={`chip ${on ? "on" : ""}`} aria-pressed={on} onClick={toggle}>{on ? "On" : "Turn on"}</button>
+      {note && <p className="flag">{note}</p>}
+    </section>
+  );
+}
+
 interface Quote { symbol: string; name: string; price: number | null; change_pct: number | null; as_of: string | null; today: number[] }
 
 function LivePrices({ open }: { open: (s: string) => void }) {
@@ -120,6 +170,8 @@ export function WatchScreen({ open }: { open: (s: string) => void }) {
         )}
         <p className="meta">Limits use closing prices, so these fire after the close. They land in the Chat tab, along with filings as they rank.</p>
       </section>
+
+      <PhoneAlerts settings={settings} />
 
       <section className="sec">
         <h2>Filings that can interrupt you</h2>

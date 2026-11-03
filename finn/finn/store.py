@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS llm_calls (id INTEGER PRIMARY KEY AUTOINCREMENT, ts T
   input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ms INTEGER);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS doc_text (url TEXT PRIMARY KEY, pages BLOB);
+CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, subscription TEXT, settings TEXT, seen TEXT);
 """
 
 

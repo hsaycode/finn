@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from finn import api, chat, research
+from finn import api, chat, push, research
 from finn.store import db, set_meta
 
 client = TestClient(api.app)
@@ -412,3 +412,53 @@ def test_a_management_alert_says_who():
     db().commit()
     m = [x for x in client.get("/api/alerts").json()["messages"] if x["kind"] == "filing"][0]
     assert m["text"] == "Asha Rao, CEO. ED, ICICI Bank"
+
+
+SUB = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc", "keys": {"p256dh": "k", "auth": "a"}}
+
+
+@pytest.fixture
+def phones():
+    db().execute("DELETE FROM push_subs")
+    db().commit()
+
+
+def test_notifications_are_off_until_keys_are_set(phones, monkeypatch):
+    monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
+    assert client.get("/api/push").json() == {"enabled": False, "public_key": None}
+    assert client.post("/api/push/subscribe", json={"subscription": SUB}).status_code == 404
+    assert push.send_new(lambda *a: 1 / 0) == 0  # never even asks for alerts
+
+
+def test_a_subscription_can_only_point_at_a_browser_push_service(phones):
+    for bad in ("https://169.254.169.254/latest", "http://fcm.googleapis.com/x", "https://evil.com/fcm.googleapis.com", "https://fcm.googleapis.com.evil.com/x", "file:///etc/passwd"):
+        assert not push.subscribe({**SUB, "endpoint": bad}, 5, 2, [])
+    for good in ("https://fcm.googleapis.com/x", "https://updates.push.services.mozilla.com/x", "https://web.push.apple.com/x", "https://wns2-par02p.notify.windows.com/x"):
+        assert push.valid_endpoint(good)
+
+
+def test_a_phone_gets_only_whats_new_under_its_own_limits(phones):
+    assert push.subscribe(SUB, 7, 3, ["results"])
+    db().execute("UPDATE push_subs SET seen='2026-01-01T00:00:00'")
+    db().commit()
+    asked, sent = [], []
+
+    def alerts_for(move, vol, muted):
+        asked.append((move, vol, muted))
+        return [{"ts": "2026-02-02T10:00:00", "symbol": "AAA", "title": "New", "text": "why"}, {"ts": "2025-12-01T10:00:00", "symbol": "AAA", "title": "Old", "text": "why"}]
+
+    def deliver(subscription, payload):
+        sent.append(payload)
+        return 201
+
+    assert push.send_new(alerts_for, deliver) == 1
+    assert asked == [(7, 3, ["results"])] and sent[0]["title"] == "AAA: New" and sent[0]["url"] == "/research/AAA"
+    assert push.send_new(alerts_for, deliver) == 0  # never twice
+
+
+def test_a_phone_that_has_gone_is_forgotten(phones):
+    push.subscribe(SUB, 5, 2, [])
+    db().execute("UPDATE push_subs SET seen='2026-01-01T00:00:00'")
+    db().commit()
+    push.send_new(lambda *a: [{"ts": "2026-02-02T10:00:00", "symbol": "A", "title": "x", "text": "y"}], lambda *a: 410)
+    assert db().execute("SELECT COUNT(*) n FROM push_subs").fetchone()["n"] == 0

@@ -207,7 +207,9 @@ def rescore(v: C.Verdict, card: dict | None, amount: float | None, ttm_revenue: 
         if "subsidiary" in headline:
             score, reason = 66, "A subsidiary is selling shares"
         else:
-            score, reason = 80, "Fresh equity raise, which dilutes holders"
+            # A large raise keeps the rank its size earned. An unsized one takes the measured floor.
+            reason = reason if sized else "Fresh equity raise, which dilutes holders"
+            score = max(score if sized else 0, 55)
 
     return category, score, reason
 

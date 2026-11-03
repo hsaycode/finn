@@ -4,7 +4,7 @@
 
 A mobile-first financial investment agent for Indian equities, built for the ENAM Holdings AI Engineer Build Challenge.
 
-### Try it on a phone: [YOUR-RENDER-URL](https://finn-aehf.onrender.com/)
+### Try it on a phone: [https://finn-aehf.onrender.com/](https://finn-aehf.onrender.com/)
 
 It runs on a free host, so the first open can take about a minute. No login or setup is needed. Filings and prices ship with the app up to 3 Nov 2026.
 

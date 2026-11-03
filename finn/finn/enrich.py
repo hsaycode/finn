@@ -148,6 +148,10 @@ def rescore(v: C.Verdict, card: dict | None, amount: float | None, ttm_revenue: 
     category, score, reason = v.category, v.score, v.reason
     card = card or {}
     kind = card.get("kind")
+    # Answering the exchange about a market report ends a story the investor saw begin, so it can't be paperwork.
+    # A free model called Sun Pharma's reply routine, which left its card saying the response was still awaited.
+    if v.category == "rumour" and kind == "routine":
+        kind = "rumour"
     if kind in KINDS:
         category = "unclassified" if kind == "routine" else kind
     # A board outcome approving results usually declares a dividend too. Results are the news.

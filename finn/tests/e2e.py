@@ -23,6 +23,14 @@ def step(name, fn):
         print(f"FAIL  {name}\n      {str(e)[:400]}", flush=True)
 
 
+def close_window(context):
+    # Playwright's Firefox can crash closing a second window after the checks have run. It says nothing about the app.
+    try:
+        context.close()
+    except Exception:
+        pass
+
+
 with sync_playwright() as p:
     b = getattr(p, BROWSER).launch()
     # Firefox has no mobile emulation, so there it's only a phone-sized window.
@@ -249,7 +257,36 @@ with sync_playwright() as p:
         banner = live.locator(".movers", has_text="Moving now")
         expect(banner).to_contain_text("DIXON")
         expect(banner).to_contain_text("2.4× vol so far")
-        other.close()
+        close_window(other)
+
+    def first_look_on_a_quiet_day():
+        empty = {"top": [], "notable": [], "routine": [], "total_filings": 0, "latest_notable": None, "meta": {"last_refresh": None, "window_start": "", "oldest_filing": None}}
+        other = b.new_context(viewport={"width": 390, "height": 844}, service_workers="block")
+        first = other.new_page()
+        first.route("**/api/brief?hours=24*", lambda r: r.fulfill(json=empty))
+        first.goto(BASE, wait_until="networkidle")
+        expect(first.get_by_text("A quiet 24 hours, so here are the last 7 days.")).to_be_visible()
+        expect(first.get_by_role("button", name="7 days", exact=True)).to_have_attribute("aria-pressed", "true")
+        expect(first.locator(".card").first).to_be_visible()
+        # Choosing a window ends it, and a choice sticks.
+        first.get_by_role("button", name="24 hours", exact=True).click()
+        expect(first.get_by_text("Nothing needs you.")).to_be_visible()
+        expect(first.get_by_text("A quiet 24 hours")).to_have_count(0)
+        # Coming back opens on 24 hours and tells the truth about a quiet day.
+        first.reload(wait_until="networkidle")
+        expect(first.get_by_role("button", name="24 hours", exact=True)).to_have_attribute("aria-pressed", "true")
+        expect(first.get_by_text("Nothing needs you.")).to_be_visible()
+        close_window(other)
+        # Left on the wider view, the next visit still goes back to 24 hours.
+        other = b.new_context(viewport={"width": 390, "height": 844}, service_workers="block")
+        again = other.new_page()
+        again.route("**/api/brief?hours=24*", lambda r: r.fulfill(json=empty))
+        again.goto(BASE, wait_until="networkidle")
+        expect(again.get_by_text("A quiet 24 hours")).to_be_visible()
+        again.reload(wait_until="networkidle")
+        expect(again.get_by_role("button", name="24 hours", exact=True)).to_have_attribute("aria-pressed", "true")
+        expect(again.get_by_text("A quiet 24 hours")).to_have_count(0)
+        close_window(other)
 
     def own_holdings():
         pg.goto(f"{BASE}/watch", wait_until="networkidle")
@@ -335,6 +372,7 @@ with sync_playwright() as p:
     step("Chat keeps the company for a follow-up", chat_remembers_the_company)
     step("Chat says hi back and stays on the company", chat_says_hi)
     step("Limits show live moves during market hours", moving_now_banner)
+    step("A quiet first look opens on 7 days, once", first_look_on_a_quiet_day)
     step("Holdings can be edited and survive a reload", own_holdings)
     step("Your holdings decide what the brief shows", own_holdings_change_the_brief)
     step("The brief shows what's coming up", coming_up)

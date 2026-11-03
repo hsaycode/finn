@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_SETTINGS, METRIC_NAMES, ago, api, cr, day, load, marketMoment, mine, save, signed, type Brief, type Event, type Holding, type Person, type Pin, type ResultsCard, type Settings } from "./lib";
 import { MovingNow, alertsPath, type Alert } from "./Chat";
 import { Collapse, SourceLink, VerdictTag } from "./ui";
@@ -272,6 +272,10 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
   const [hours, setHours] = useState(() => load<number>("finn.hours", 24));
   const [span, setSpan] = useState<Span | null>(() => load<Span | null>("finn.span", null));
   const [custom, setCustom] = useState(() => load<Span | null>("finn.span", null) !== null);
+  // Most days nothing in a portfolio ranks top, and that's a poor first impression of a brief. So only on someone's
+  // very first look, an empty 24 hours opens on the last 7 days and says so. After that, an empty day stays honest.
+  const firstLook = useRef(load<number | null>("finn.hours", null) === null && load<Span | null>("finn.span", null) === null);
+  const [widened, setWidened] = useState(false);
   const [brief, setBrief] = useState<Brief | null>(null);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [error, setError] = useState(false);
@@ -284,19 +288,34 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
   useEffect(() => {
     setBrief(null);
     setError(false);
-    api<Brief>(mine(span ? `/api/brief?since=${span.from}&until=${span.to}` : `/api/brief?hours=${hours}`)).then(setBrief).catch(() => setError(true));
+    api<Brief>(mine(span ? `/api/brief?since=${span.from}&until=${span.to}` : `/api/brief?hours=${hours}`)).then((b) => {
+      if (firstLook.current && !b.top.length) {
+        firstLook.current = false;
+        setWidened(true);
+        setHours(168);
+        return;
+      }
+      firstLook.current = false;
+      setBrief(b);
+    }).catch(() => setError(true));
     api<{ companies: Holding[] }>(mine("/api/portfolio")).then((p) => setHoldings(p.companies)).catch(() => {});
-    save("finn.hours", hours);
+    // The wider view is for this visit only, so tomorrow's brief still opens on 24 hours.
+    if (!widened) save("finn.hours", hours);
     save("finn.span", span);
   }, [hours, span?.from, span?.to]);
 
   const today = isoDay(new Date());
   const pickWindow = (h: number) => {
+    firstLook.current = false;
+    setWidened(false);
+    save("finn.hours", h);
     setCustom(false);
     setSpan(null);
     setHours(h);
   };
   const setDate = (patch: Partial<Span>) => {
+    firstLook.current = false;
+    setWidened(false);
     const next = { from: span?.from ?? isoDay(new Date(Date.now() - 7 * 864e5)), to: span?.to ?? today, ...patch };
     // Picking a start after the end moves the end along, so the range is never backwards.
     if (next.from > next.to) next.to = next.from;
@@ -327,6 +346,24 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
   const news = notable.filter((e) => e.category === "press_release");
   const grouped = news.length >= 3;
   const hidden = brief ? brief.routine.reduce((n, e) => n + e.filings.length, 0) : 0;
+  // One close is a glance. Over a longer window the list runs long, and the filings it promises shouldn't sit below it.
+  const latestClose = hours <= 24 && !span;
+  const moverList = brief && moved.length > 0 && (
+    <section aria-label="Price and volume alerts" className="movers">
+      <h2 className="eyebrow">Crossed your limits{latestClose ? ` · close of ${day(moved[0].date)}` : ""}</h2>
+      {moved.slice(0, 6).map((m) => (
+        <div key={`${m.symbol}${m.date}`} className="mover">
+          <button className="ticker" onClick={() => open(m.symbol)}>{m.symbol}</button>
+          <span className="num mover-figs">
+            <span className={m.move >= 0 ? "up" : "down"}>{signed(m.move)}</span>
+            {m.volX !== null && <span> · {m.volX.toFixed(1)}× vol</span>}
+          </span>
+          {!latestClose && <span className="when mover-date">{day(m.date)}</span>}
+          {m.related && <p className="mover-note">Filed around then: {m.related}</p>}
+        </div>
+      ))}
+    </section>
+  );
 
   return (
     <>
@@ -343,6 +380,7 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
           </h1>
         ) : !error ? <h1 className="lede lede-quiet">Reading your filings…</h1> : null}
         {span && <p className="moment num">{day(span.from)} to {day(span.to)}</p>}
+        {widened && brief && <p className="moment">A quiet 24 hours, so here are the last 7 days.</p>}
         {top.length > 0 && (
           <div className="progress" role="progressbar" aria-valuenow={finished} aria-valuemin={0} aria-valuemax={top.length} aria-label="Items read">
             <div style={{ width: `${(finished / top.length) * 100}%` }} />
@@ -387,22 +425,7 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
         </div>
       )}
 
-      {brief && moved.length > 0 && (
-        <section aria-label="Price and volume alerts" className="movers">
-          <h2 className="eyebrow">Crossed your limits{hours <= 24 && !span ? ` · close of ${day(moved[0].date)}` : ""}</h2>
-          {moved.slice(0, 6).map((m) => (
-            <div key={`${m.symbol}${m.date}`} className="mover">
-              <button className="ticker" onClick={() => open(m.symbol)}>{m.symbol}</button>
-              <span className="num mover-figs">
-                <span className={m.move >= 0 ? "up" : "down"}>{signed(m.move)}</span>
-                {m.volX !== null && <span> · {m.volX.toFixed(1)}× vol</span>}
-              </span>
-              {(hours > 24 || span) && <span className="when mover-date">{day(m.date)}</span>}
-              {m.related && <p className="mover-note">Filed around then: {m.related}</p>}
-            </div>
-          ))}
-        </section>
-      )}
+      {latestClose && moverList}
 
       {!brief && !error && <div aria-hidden="true">{[0, 1, 2].map((i) => <div key={i} className="skeleton skeleton-card" />)}</div>}
 
@@ -426,6 +449,8 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
           )}
         </div>
       )}
+
+      {!latestClose && moverList}
 
       {allDone && (
         <div className="endnote">

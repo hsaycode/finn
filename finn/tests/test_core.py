@@ -838,3 +838,11 @@ def test_a_promise_cant_fall_due_before_it_was_made():
     assert not P._period_fits("Q3 FY26", "the trial is going to start in Q3 of current fiscal", "2026-03-31")
     assert not P._period_fits("FY26", "this year", "2026-03-31")
     assert P._period_fits("Q3 FY27", "the trial is going to start in Q3 of current fiscal", "2026-03-31")
+
+
+def test_a_reply_to_a_rumour_query_isnt_paperwork_whatever_the_model_says():
+    v = C.Verdict("rumour", 66, "Exchange asked the company to respond to a market report", True)
+    category, score, _ = E.rescore(v, {"kind": "routine"}, None, None)
+    assert category == "rumour" and score >= C.NOTABLE_AT
+    other = C.Verdict("press_release", 40, "Press release", True)
+    assert E.rescore(other, {"kind": "routine"}, None, None)[1] <= 15

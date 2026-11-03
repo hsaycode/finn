@@ -8,6 +8,8 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 
 **A brief that ends.** An investor doesn't need another feed. The brief counts down, says "That's everything", and shows how many filings it buried, so the silence can be trusted.
 
+**Except on someone's first look.** On 41 of 63 recent days nothing in this portfolio ranked top, so a new visitor would usually meet an empty page before knowing what FINN does. Only on that first visit, an empty 24 hours opens on the last 7 days and says so. After that an empty day says "Nothing needs you". Price moves also sit below the filings on a longer window, because six of them were pushing the filings off the screen.
+
 **Alert budget instead of a bare threshold.** Moving a limit shows how many alerts it would have fired over the last 30 sessions. People can't judge "2× volume" in the abstract, but they can judge "7 interruptions a week".
 
 **Chat is a section, not the interface.** An investor often doesn't know what to ask, and open-ended chat is where invented answers live, so the Brief stays the front door. The Chat tab holds alerts and answers questions, but code writes the answers from FINN's records. A model can only work out where to look, or summarise transcript sentences that are shown beside it. It refuses buy or sell questions and says when it can't tell.

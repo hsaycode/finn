@@ -92,17 +92,17 @@ The first run of this check failed, and it was the most useful test in the proje
 
 | What | Checked | Failed |
 |---|---|---|
-| Filing headlines | 729 | 0 |
+| Filing headlines | 734 | 0 |
 | Promise summaries | 503 | 0 |
 | Filing details | 191 | 0 |
 | Bull and bear points | 137 | 0 |
-| A person's background | 131 | 0 |
+| A person's background | 139 | 0 |
 | Company KPIs | 122 | 0 |
-| Annual report notes | 40 | 1 |
+| Annual report notes | 40 | 0 |
 | Verdict notes | 37 | 0 |
 | Business descriptions | 22 | 0 |
 
-This run, on 2026-11-03, includes the filings read by a free model. The one failure was JP Power's auditor note: its figure is real, but it's on page 35, not the cited page 33. The page was corrected directly in the stored dossier, and the table wasn't rerun afterwards. Code checks an auditor note's figure against the text the model read, not against its cited page, so a model can still get that page number wrong.
+This run, on 2026-11-03 after the day's refresh, includes the filings read by a free model. An earlier run that day failed 1 line, JP Power's auditor note: its figure is real, but it's on page 35, not the cited page 33. The page was corrected directly in the stored dossier. Code checks an auditor note's figure against the text the model read, not against its cited page, so a model can still get that page number wrong.
 
 **Limits:** a pass means no figure or name was invented. It can't prove a summary's meaning is fair, which is why sources stay one tap away.
 
@@ -157,7 +157,7 @@ Code-calculated verdicts weren't the problem: Kaynes's matched Claude's. The new
 - FINN finds and settles less on the free tier. For Dixon it misses the ₹7,000 crore export target that Claude's build caught. It also overturned verdicts that Claude's record shows were right, such as Chennai's delay, so "can't verify" is more common.
 - A company read this way says so on its page. The 23 shipped dossiers remain Claude-built, and a verdict stands from one build to the next unless a new call changes it.
 
-**Filings:** rules read the subject lines of 1,128 older PDFs at no cost. A free model then read 48 of the highest-ranked, at about 2,400 tokens each, and 1,107 remain for later days. Of its 13 demotions from the top tier, some were wrong, including HDFC Bank's chairman resigning and Polycab's new CFO, so code now decides who counts as a top executive and keeps results filings as results. After that, 10 filings changed tier against the earlier ranking, and all 10 were read and look defensible. 56 PDFs couldn't be read, and those filings keep their rule-based rank.
+**Filings:** rules read the subject lines of 1,128 older PDFs at no cost. A free model then read 48 of the highest-ranked, at about 2,400 tokens each. A refresh on 3 November read a few more, and about 1,100 remain for later days. Of its 13 demotions from the top tier, some were wrong, including HDFC Bank's chairman resigning and Polycab's new CFO, so code now decides who counts as a top executive and keeps results filings as results. It also called 5 companies' replies to rumour queries routine, which left Sun Pharma's card saying its response was awaited after it had replied, so code keeps those notable too. After that, 10 filings changed tier against the earlier ranking, and all 10 were read and look defensible. 56 PDFs couldn't be read, and those filings keep their rule-based rank.
 
 **Chat:** real questions through the app took about a second or less on Qwen and used about 600 tokens each. Chat runs separately, so research can't use up its allowance.
 
@@ -213,7 +213,7 @@ Figures come from the app's own ledger, as reported by the provider. Repeat runs
 
 ## Software tests
 
-242 automated tests (`pytest tests`, with no network or model) and 30 browser checks at phone size (`tests/e2e.py`), run in Chromium, WebKit (Safari's engine) and Firefox. An accessibility scan found no serious issues in either theme, and phone-size checks ran from 320 to 768 pixels wide. Some inline source links are under 24 pixels tall, and a dossier takes about 5 seconds to open on simulated slow 4G. Firefox has failed now and then: one run failed a click on the Brief, which took 3 dependent checks with it, and a later run failed 1 check that wasn't recorded. The runs after each passed in full. The cause wasn't found, so treat it as an intermittent problem. WebKit also logs a cancelled calendar request during these runs, without any check failing, and that wasn't traced either.
+243 automated tests (`pytest tests`, with no network or model) and 31 browser checks at phone size (`tests/e2e.py`), run in Chromium, WebKit (Safari's engine) and Firefox. An accessibility scan found no serious issues in either theme, and phone-size checks ran from 320 to 768 pixels wide. Some inline source links are under 24 pixels tall, and a dossier takes about 5 seconds to open on simulated slow 4G. Firefox has failed now and then: one run failed a click on the Brief, which took 3 dependent checks with it, and a later run failed 1 check that wasn't recorded. The runs after each passed in full, so treat those as an intermittent problem whose cause wasn't found. Playwright's Firefox also sometimes crashes closing a second window after its checks have run, and the test script now ignores that. WebKit has logged a cancelled calendar request during some runs without any check failing, and that wasn't traced either.
 
 **Tested only in parts:** the "Moving now" banner. The live endpoint ran against real quotes during market hours, and the banner was checked on screen with the clock held at market hours and the live answer filled in, but the two haven't been seen together.
 

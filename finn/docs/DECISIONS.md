@@ -46,9 +46,11 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 | Transcripts exist for every company | About a quarter of random companies show no sign of holding investor calls | Annual reports stand in for them, and the app says when they do |
 | NBFCs and insurers file like everyone else | NBFCs were read as banks and insurers use another taxonomy, so their cards came out blank | Each format now gets its own parser and headline numbers |
 | One filing, one card | Polycab's dispute produced 9 filings over 3 weeks and ended with the order set aside | Stories are threaded, ranked by their worst moment and told from their latest |
+| The deployed app would keep itself current | A refresh from Render failed for all 18 holdings, and one failure stopped each company's prices too, so the live app froze at its snapshot | Prices no longer depend on NSE. Filings, results and dates fall back to NSE's archive feeds, then screener.in, and `/api/status` shows which source answered |
 
 ## Trust
 
+- **Everything cites its source.** A figure, a quote, a price or an alert each links to the document behind it, and a report ends with a list of them all. The one answer with nothing to link, a general explanation of a term in chat, says so.
 - **Models choose sentence numbers, not words.** Every quote on screen is verbatim source text, so a quote can't be invented. Joining sentences was still a way to mislead: a check against the PDFs found 18% of quotes read as one passage that the document didn't contain. Quotes now keep to one speaker and one call, and gaps are marked.
 - **Models see the sentence before the one they cite.** "Should hit ₹7,000 crores" means nothing alone: the line before it says exports. Reading sentences in isolation caused most of the wrong verdicts an audit found, so this costs more tokens and is worth them.
 - **Code won't score what it can't identify.** An unnamed margin isn't compared with filed EBITDA, a due date can't contradict "over the next few quarters", and a verdict is dropped if its explanation cites a figure the reader can't see.
@@ -67,9 +69,9 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 |---|---|---|
 | Sorting the obvious paperwork, about half of all filings | None (rules) | Free, and good enough for paperwork |
 | Results figures | None (XBRL) | Exact, and a model could only add errors |
-| Reading filing PDFs | Shipped: Claude Haiku 5.5. New: gpt-oss-20b on Groq | Structured extraction |
-| Extracting promises | Shipped: Claude Haiku 5.5. New: gpt-oss-20b on Groq | Input pre-filtered to about 10% of each transcript |
-| Judging promises, reviewing verdicts, bull and bear | Shipped: Claude Sonnet 5.5. New: gpt-oss-120b on Groq | Chosen by comparison, see below |
+| Reading filing PDFs | Shipped: a low-cost paid model. New: gpt-oss-20b on Groq | Structured extraction |
+| Extracting promises | Shipped: a low-cost paid model. New: gpt-oss-20b on Groq | Input pre-filtered to about 10% of each transcript |
+| Judging promises, reviewing verdicts, bull and bear | Shipped: a stronger paid model. New: gpt-oss-120b on Groq | Chosen by comparison, see below |
 | Reading chat questions, summarising transcript sentences, small talk | Qwen 3.8 27B on Groq | Fast enough for a conversation. It's a preview model, so a figure missing from its quotes isn't shown, and an outage falls back to the passages |
 | Live limits, calendar, follow-up questions, one-page summary | None (code) | None of them needs a model, so none of them can run out of allowance |
 
@@ -83,7 +85,7 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 
 **A weaker model gets stricter checks.** The first free-tier audit found 3 clearly wrong verdicts out of 8 on Dixon, and the second reading had agreed with all 3. So on the free tier a verdict stands only if a second reading explicitly agrees, evidence that only restates a plan ("trials will start") can't prove delivery, and a due date can't fall before the call that promised it. A free model also said a chairman and a new CFO weren't top executives, so code now decides that from the job title. The cost is fewer verdicts, and the app says when a company was read by a free model. See `docs/RESULTS.md`.
 
-**Sonnet over Opus for judgment.** `eval/bakeoff_judge.py` ran both over the same evidence for three companies. They agreed on 69 of 79 verdicts (87%), and neither was clearly better on the other 10, at about 40% of the cost. There's no ground truth for those 10, so this is a judgment call, and swapping is one environment variable.
+**A mid-priced model over the most expensive one for judgment.** `eval/bakeoff_judge.py` ran both over the same evidence for three companies. They agreed on 69 of 79 verdicts (87%), and neither was clearly better on the other 10, at about 40% of the cost. There's no ground truth for those 10, so this is a judgment call, and swapping is one environment variable.
 
 **Caching.** Answers are stored by content hash, so re-running on an unchanged filing costs nothing, and the deployed app can replay them with no key at all.
 
@@ -91,7 +93,9 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 
 ## Architecture
 
-**One process, one SQLite file shipped in the image.** I planned on hosted Postgres and dropped it. A snapshot in the image means a cold start is never an empty app, and if NSE blocks a cloud IP the app still shows its last good data with its date.
+**One process, one SQLite file shipped in the image.** I planned on hosted Postgres and dropped it. A snapshot in the image means a cold start is never an empty app.
+
+**More than one way to each fact.** NSE's API failed from the cloud host, so each kind of data now has a fallback that fails on its own: prices from Yahoo, filings and exact XBRL results from NSE's archive feeds, older results from screener.in. Its figures say where they came from and never replace a filed one. The feeds only reach back to midnight, so a script publishes a fresh database from a computer NSE answers.
 
 **Fallbacks.** No model: filings still rank by rules, and research still shows every computed section and says what's missing. No transcripts: the section says so. Banks: EBITDA and cash-conversion verdicts are replaced with NII, pre-provision profit and NPAs.
 

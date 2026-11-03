@@ -6,7 +6,7 @@ A mobile-first financial investment agent for Indian equities, built for the ENA
 
 ### Try it on a phone: [https://finn-aehf.onrender.com/](https://finn-aehf.onrender.com/)
 
-It runs on a free host, so the first open can take about a minute. No login or setup is needed. Filings and prices ship with the app up to 3 Nov 2026.
+It runs on a free host, so the first open can take about a minute. No login or setup is needed. Filings and prices ship with the app up to 3 Nov 2026, and it looks for newer ones each time it wakes.
 
 <table>
   <tr>
@@ -44,6 +44,7 @@ It runs on a free host, so the first open can take about a minute. No login or s
 - A figure that isn't in its cited sentence gets dropped.
 - The company's name is hidden from the analysis models, which enforces the primary-sources rule instead of just requesting it.
 - "Can't verify" and "Too vague to test" are real answers, and the app shows them.
+- **Everything cites its source, one tap away.** That means the filing, the transcript page, the annual report, screener.in's table or the Yahoo Finance price. A report also ends with a list of every document behind it.
 
 | What was measured | Result |
 |---|---|
@@ -53,7 +54,7 @@ It runs on a free host, so the first open can take about a minute. No login or s
 | Model-written lines against their sources | 0 of 1,925 failed, after one wrong page number was corrected |
 | Random tickers with no model, 200 runs | No crashes |
 
-These reviews were run by Claude, the AI used to build FINN, and no person has audited them. [`finn/docs/RESULTS.md`](finn/docs/RESULTS.md) gives every number with its limits, including the first runs that failed and what they changed.
+[`finn/docs/RESULTS.md`](finn/docs/RESULTS.md) gives every number with its limits, including the first runs that failed and what they changed.
 
 ## Models and cost
 
@@ -61,18 +62,19 @@ These reviews were run by Claude, the AI used to build FINN, and no person has a
 |---|---|
 | Sorting obvious paperwork, about half of all filings | None (rules) |
 | Results figures, live limits, calendar, follow-ups, one-page summary | None (code) |
-| Reading filing PDFs and extracting promises | Shipped: Claude Haiku. New: gpt-oss-20b on Groq |
-| Judging promises and writing bull and bear | Shipped: Claude Sonnet. New: gpt-oss-120b on Groq |
+| Reading filing PDFs and extracting promises | Shipped: a low-cost paid model. New: gpt-oss-20b on Groq |
+| Judging promises and writing bull and bear | Shipped: a stronger paid model. New: gpt-oss-120b on Groq |
 | Chat | Qwen 3.8 on Groq |
 
 Building everything, including rework and experiments, cost about **$10.60** in model calls. **Running it costs $0**: new work needs only a free Groq key. Requests are split and paced to the free limits, chat keeps its own model so research can't starve it, and answers are cached so repeating work costs nothing.
 
 ## What to know before relying on it
 
-- **Free-model research is weaker.** The 23 ready-made reports were built with Claude. A company you add is read by a free model, finds less, and says so on its page. An early audit found 3 of 8 Dixon verdicts clearly wrong, so stricter code checks were added, and those checks haven't had a clean test on unseen companies. It manages about 3 to 10 new companies a day.
+- **Free-model research is weaker.** The 23 ready-made reports were built with paid models. A company you add is read by a free model, finds less, and says so on its page. An early audit found 3 of 8 Dixon verdicts clearly wrong, so stricter code checks were added, and those checks haven't had a clean test on unseen companies. It manages about 3 to 10 new companies a day.
 - **Verdicts are few.** Across the shipped reports, 40 statements are settled and most stay "can't verify", "too vague" or "not due yet".
 - **Nothing reaches a closed app by default.** Alerts land in the app. Browser notifications are built and need keys to turn on, and they haven't been tried on a real phone.
 - **The free host forgets.** It sleeps when idle and wakes with the shipped snapshot, so companies added since are lost, though the app reminds it of your own list.
+- **NSE's API may not answer the host.** A refresh from Render failed for all 18 holdings. FINN now keeps prices updating regardless and falls back to NSE's archive feeds and screener.in. Those feeds only reach back to midnight, so filings from while the host slept can be missing until the data is published again, and the app says when they might be.
 - **No real investor has used it yet.** It reports what filings say, can be wrong, and isn't investment advice.
 
 Left out on purpose: portfolio P&L, logins, news and broker content, and analysis of investor decks, because FINN tests management against filed numbers rather than its own framing. [`finn/docs/DECISIONS.md`](finn/docs/DECISIONS.md) explains these choices, including the ones real data overturned.

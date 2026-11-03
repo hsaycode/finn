@@ -58,6 +58,10 @@ def _say(text: str, items: list[dict] | None = None, suggest: list[str] | None =
     return {"text": text, "items": items or [], "suggest": suggest or [], "table": table}
 
 
+def _yahoo(symbol: str) -> str:
+    return f"https://finance.yahoo.com/quote/{symbol}.NS"
+
+
 def _event_item(r: dict) -> dict:
     return {"symbol": r["symbol"], "title": r["title"], "detail": r["reason"], "url": r["pdf_url"], "when": r["ts"]}
 
@@ -95,7 +99,7 @@ def _moved(move_pct: float, vol_x: float, symbols: list[str] | None = None) -> d
         volume = s["vol_x"] if s["enough_history"] else None
         if abs(s["move_pct"]) >= move_pct or (volume or 0) >= vol_x:
             shown = f"{s['move_pct']:+.1f}%" + (f" on {volume:.1f}x normal volume" if volume else "")
-            items.append((abs(s["move_pct"]), {"symbol": c["symbol"], "title": shown, "detail": f"Close of {datetime.fromisoformat(s['date']).strftime('%d %b')}", "url": None, "when": s["date"]}))
+            items.append((abs(s["move_pct"]), {"symbol": c["symbol"], "title": shown, "detail": f"Close of {datetime.fromisoformat(s['date']).strftime('%d %b')}", "url": _yahoo(c["symbol"]), "source": "Yahoo Finance", "when": s["date"]}))
     items.sort(key=lambda x: -x[0])
     if not items:
         return _say(f"Nothing crossed your limits (±{move_pct:g}%, {vol_x:g}x volume) at the last close.")
@@ -107,7 +111,7 @@ def _price(symbol: str) -> dict:
     if not q:
         return _say(f"I couldn't get a price for {symbol} just now.")
     move = f"{q['change_pct']:+.2f}%" if q.get("change_pct") is not None else ""
-    return _say(f"{symbol} last traded at ₹{q['price']:,.2f} {move}, as of {q['as_of']}. Prices can be delayed.".replace("  ", " "), [{"symbol": symbol, "title": "Open research", "detail": None, "url": None, "when": None}])
+    return _say(f"{symbol} last traded at ₹{q['price']:,.2f} {move}, as of {q['as_of']}. Prices can be delayed.".replace("  ", " "), [{"symbol": symbol, "title": "Open research", "detail": None, "url": None, "when": None}, {"symbol": None, "title": "Yahoo Finance", "detail": None, "url": _yahoo(symbol), "when": None}])
 
 
 def _results(symbol: str) -> dict:
@@ -130,7 +134,11 @@ def _results(symbol: str) -> dict:
         change = " · ".join(x for x in (f"{m['qoq']:+.1f}% QoQ" if m.get("qoq") is not None else "", f"{m['yoy']:+.1f}% YoY" if m.get("yoy") is not None else "") if x)
         lines.append({"symbol": None, "title": f"{research.METRIC_LABELS.get(k, k.upper())}: ₹{m['value']:,.0f} cr", "detail": change or None, "url": None, "when": None})
     flags = [f["text"] for f in card.get("flags", [])]
-    return _say(f"{symbol} {card['label']} results, {card['basis']}, from the filed data." + (f" {flags[0]}" if flags else ""), lines + [{"symbol": None, "title": "The filing's data", "detail": None, "url": card.get("source"), "when": None}])
+    from_table = "screener" in (card.get("source_label") or "")
+    return _say(
+        f"{symbol} {card['label']} results, {card['basis']}, from {card['source_label'] if from_table else 'the filed data'}." + (f" {flags[0]}" if flags else ""),
+        lines + [{"symbol": None, "title": "Screener's table" if from_table else "The filing's data", "detail": None, "url": card.get("source"), "when": None}],
+    )
 
 
 def _record(symbol: str) -> dict:
@@ -305,7 +313,8 @@ def _reply(message: str, ask, move_pct: float, vol_x: float, about: str | None, 
         return _small_talk(text)
     if _DEFINE.match(text):
         said = _converse(text)
-        return _say(said or "I can't explain that just now. Ask me about a company and I'll answer from its records.")
+        # The one kind of answer with nothing behind it to open, so it says that rather than looking sourced.
+        return {**_say(said), "unsourced": True} if said else _say("I can't explain that just now. Ask me about a company and I'll answer from its records.")
     found = companies_in(text)
     followup = False
     if about and not found and not _PORTFOLIO_WIDE.search(low):

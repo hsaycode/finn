@@ -215,6 +215,11 @@ def test_a_refresh_that_reaches_nothing_doesnt_claim_it_checked(monkeypatch):
         raise pipeline.FetchError("down")
 
     monkeypatch.setattr(pipeline, "refresh_company", down)
+    monkeypatch.setattr(pipeline, "refresh_prices", lambda s: 0)
+    monkeypatch.setattr(pipeline.nse, "feed_filings", down)
+    monkeypatch.setattr(pipeline.nse, "feed_results", down)
+    monkeypatch.setattr(pipeline.nse, "feed_events", down)
+    monkeypatch.setattr(pipeline.screener, "company", down)
     monkeypatch.setattr(pipeline, "enrich_pending", lambda **k: {})
     set_meta("last_refresh", "2026-01-01T00:00:00")
     pipeline.refresh(["AAA"], days=1, log=lambda *_: None)

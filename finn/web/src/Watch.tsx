@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { DEFAULT_SETTINGS, MAX_HOLDINGS, api, day, fromSource, load, marketMoment, mine, myHoldings, save, signed, type Holding, type Pin, type Settings } from "./lib";
+import { DEFAULT_SETTINGS, MAX_HOLDINGS, METHOD_URL, api, day, fromSource, load, marketMoment, mine, myHoldings, save, signed, yahooUrl, type Holding, type Pin, type Settings } from "./lib";
 import { SourceLink, Spark } from "./ui";
 
 const MUTABLE: [string, string][] = [
@@ -73,6 +73,8 @@ function LivePrices({ open, onChange, version }: { open: (s: string) => void; on
   };
   const remove = (symbol: string) => {
     setNote("");
+    // Prices for the new list take seconds to arrive, and the row shouldn't wait for them to leave.
+    setQuotes(quotes.filter((q) => q.symbol !== symbol));
     store(quotes.map((q) => q.symbol).filter((s) => s !== symbol));
   };
   const add = async (e: FormEvent) => {
@@ -137,18 +139,21 @@ function LivePrices({ open, onChange, version }: { open: (s: string) => void; on
       )}
       {editing && myHoldings() && <button className="link widen" onClick={() => { store(null); setNote(""); }}>Back to the default list</button>}
       {editing && <p className="meta">Up to {MAX_HOLDINGS} companies. Your list stays on this device.</p>}
-      {asOf && <p className="meta num">As of {asOf}. Yahoo Finance prices can be delayed, so check your broker before you trade.</p>}
+      {asOf && <p className="meta num">As of {asOf}. Prices can be delayed, so check your broker before you trade. <SourceLink url="https://finance.yahoo.com/">Yahoo Finance</SourceLink></p>}
     </section>
   );
 }
 
-interface Hit { symbol: string; d: string; m: number; x: number | null; note?: string }
+interface Hit { symbol: string; d: string; m: number; x: number | null; note?: string; noteUrl?: string | null }
 
 function hits(holdings: Holding[], volX: number, movePct: number): Hit[] {
   const out: Hit[] = [];
   for (const h of holdings) {
     for (const s of h.series.slice(-LOOKBACK)) {
-      if (Math.abs(s.m) >= movePct || (s.ok && s.x !== null && s.x >= volX)) out.push({ symbol: h.symbol, d: s.d, m: s.m, x: s.x, note: h.filings.find((f) => Math.abs(new Date(f.d).getTime() - new Date(s.d).getTime()) <= 864e5)?.title });
+      if (Math.abs(s.m) >= movePct || (s.ok && s.x !== null && s.x >= volX)) {
+        const near = h.filings.find((f) => Math.abs(new Date(f.d).getTime() - new Date(s.d).getTime()) <= 864e5);
+        out.push({ symbol: h.symbol, d: s.d, m: s.m, x: s.x, note: near?.title, noteUrl: near?.url });
+      }
     }
   }
   return out.sort((a, b) => b.d.localeCompare(a.d));
@@ -209,13 +214,13 @@ export function WatchScreen({ open }: { open: (s: string) => void }) {
               <li key={h.symbol + h.d}>
                 <button className="ticker" onClick={() => open(h.symbol)}>{h.symbol}</button>
                 <span className="when">{day(h.d)}</span>
-                <span className="num hit-figs"><span className={h.m >= 0 ? "up" : "down"}>{signed(h.m)}</span>{h.x !== null ? ` · ${h.x.toFixed(1)}×` : ""}</span>
-                {h.note && <p className="hit-note">Filed around then: {h.note}</p>}
+                <a className="num hit-figs figs-link" href={yahooUrl(h.symbol)} target="_blank" rel="noopener noreferrer" aria-label={`${h.symbol} on Yahoo Finance`}><span className={h.m >= 0 ? "up" : "down"}>{signed(h.m)}</span>{h.x !== null ? ` · ${h.x.toFixed(1)}×` : ""} ↗</a>
+                {h.note && <p className="hit-note">Filed around then: {h.noteUrl ? <a href={h.noteUrl} target="_blank" rel="noopener noreferrer">{h.note} ↗</a> : h.note}</p>}
               </li>
             ))}
           </ul>
         )}
-        <p className="meta">While the market is open and FINN is on your screen, your limits check the latest prices every 5 minutes. This history uses closing prices, and past alerts land in the Chat tab along with filings as they rank.</p>
+        <p className="meta">Tap a figure to check it on Yahoo Finance. While the market is open and FINN is on your screen, your limits check the latest prices every 5 minutes. This history uses closing prices, and past alerts land in the Chat tab along with filings as they rank.</p>
       </section>
 
       <PhoneAlerts settings={settings} />
@@ -270,9 +275,10 @@ export function WatchScreen({ open }: { open: (s: string) => void }) {
         <ul className="rules">
           <li><b>Figures come from the filing.</b> Results are the company's own XBRL, calculated by code. A model never does the arithmetic.</li>
           <li><b>Quotes are verbatim.</b> Models point at sentences by number, so they can't invent a quote, and a figure missing from its source gets dropped.</li>
-          <li><b>Rank is measured.</b> Each filing type's rank comes from how it moved stocks across {study.filings} filings at {study.companies} companies, compared with quiet days. The few exceptions, such as a top executive leaving, are ranked up on purpose and show their evidence.</li>
+          <li><b>Rank is measured.</b> Each filing type's rank comes from how it moved stocks across {study.filings} filings at {study.companies} companies, compared with quiet days. The few exceptions, such as a top executive leaving, are ranked up on purpose and show their evidence. <SourceLink url={METHOD_URL}>The study</SourceLink></li>
           <li><b>Size is relative.</b> A rupee figure is judged against the company's own revenue. The largest order wins moved stocks sharply six times as often as the smallest.</li>
-          <li><b>Primary sources only.</b> Research uses filings, transcripts and annual reports, with the company's name hidden from the model.</li>
+          <li><b>Primary sources for analysis.</b> Promises and verdicts come from filings, transcripts and annual reports, with the company's name hidden from the model. Multi-year tables, ratios and peers come from screener.in.</li>
+          <li><b>Every claim has a source.</b> Anything FINN states links to where it came from, shown with a ↗.</li>
           <li><b>It can be wrong.</b> Open any source and check. This isn't investment advice.</li>
         </ul>
         {status && (

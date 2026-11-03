@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "./lib";
+import { Cited, Collapse } from "./ui";
 
 export interface CompareData {
-  columns: { symbol: string; name: string; format: string | null; quarter: string | null }[];
+  columns: { symbol: string; name: string; format: string | null; quarter: string | null; results_url?: string | null; tables_url?: string | null }[];
   rows: { group: string; name: string; values: (number | string | null)[]; unit: string; best: number | null }[];
   missing?: string[];
 }
@@ -44,6 +45,9 @@ export function CompareTable({ table, open }: { table: CompareData; open: (s: st
       </table>
       <p className="meta">Bold marks the better figure where more or less is plainly better. Latest quarters: {table.columns.map((c) => `${c.symbol} ${c.quarter ?? "–"}`).join(", ")}.</p>
       {kinds.size > 1 && <p className="flag">These companies report on different formats, so operating margin, ROCE and debt don't compare like for like.</p>}
+      <Cited label="Results" items={table.columns.map((c) => ({ label: c.symbol, url: c.results_url }))} />
+      <Cited label="Ratios and history" items={table.columns.map((c) => ({ label: c.symbol, url: c.tables_url }))} />
+      <p className="meta">Promises kept come from each company's track record. Tap its name above to open every quote.</p>
     </div>
   );
 }
@@ -67,15 +71,16 @@ export function CompareSection({ ready, open }: { ready: string[]; open: (s: str
   const toggle = (s: string) => setPicked((p) => (p.includes(s) ? p.filter((x) => x !== s) : p.length < 3 ? [...p, s] : p));
 
   return (
-    <section className="sec" id="compare">
-      <h2>Compare companies</h2>
-      <p className="meta">Pick two or three, side by side on filed numbers and promises kept.</p>
-      <div className="chips chips-wrap" role="group" aria-label="Companies to compare">
-        {ready.map((s) => (
-          <button key={s} className={`chip ${picked.includes(s) ? "on" : ""}`} aria-pressed={picked.includes(s)} disabled={!picked.includes(s) && picked.length >= 3} onClick={() => toggle(s)}>{s}</button>
-        ))}
-      </div>
-      {table && <CompareTable table={table} open={open} />}
+    <section className="compare-section" id="compare">
+      <Collapse summary={<b>Compare companies</b>} className="tier">
+        <p className="meta">Pick two or three, side by side on filed numbers and promises kept.</p>
+        <div className="chips chips-wrap" role="group" aria-label="Companies to compare">
+          {ready.map((s) => (
+            <button key={s} className={`chip ${picked.includes(s) ? "on" : ""}`} aria-pressed={picked.includes(s)} disabled={!picked.includes(s) && picked.length >= 3} onClick={() => toggle(s)}>{s}</button>
+          ))}
+        </div>
+        {table && <CompareTable table={table} open={open} />}
+      </Collapse>
     </section>
   );
 }

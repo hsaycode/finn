@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { METRIC_NAMES, api, fromSource, signed, type Metric, type Promise_ } from "./lib";
+import { METRIC_NAMES, api, fromSource, signed, yahooUrl, type Metric, type Promise_ } from "./lib";
 import { SourceLink, VerdictTag } from "./ui";
 
 const value = (v: number | null) => (v === null ? "–" : `${v < 0 ? "−" : ""}${Math.abs(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`);
@@ -78,7 +78,7 @@ export function SummaryScreen({ symbol, open }: { symbol: string; open: (s: stri
         <h1 className="dossier-name">{d.name}</h1>
         <p className="meta">{d.symbol}{d.business?.industry ? ` · ${d.business.industry}` : ""} · built {new Date(d.generated).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</p>
         {quote?.price != null && (
-          <p className="meta num">₹{quote.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })}{quote.change_pct != null ? ` · ${signed(quote.change_pct, 2)}` : ""} · {quote.as_of}</p>
+          <p className="meta num">₹{quote.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })}{quote.change_pct != null ? ` · ${signed(quote.change_pct, 2)}` : ""} · {quote.as_of} · <SourceLink url={yahooUrl(d.symbol)}>Yahoo Finance</SourceLink></p>
         )}
       </header>
 
@@ -105,7 +105,7 @@ export function SummaryScreen({ symbol, open }: { symbol: string; open: (s: stri
         <section className="sec" aria-label="Latest results">
           <h2>Latest results</h2>
           <table className="results">
-            <caption>{q.label} · {q.basis} · filed XBRL</caption>
+            <caption>{q.label} · {q.basis} · <SourceLink url={q.source}>{q.source_label ?? "Filed results (XBRL)"}</SourceLink></caption>
             <thead><tr><th scope="col">₹ crore</th><th scope="col">{q.label}</th><th scope="col">QoQ</th><th scope="col">YoY</th></tr></thead>
             <tbody>
               {Object.entries<Metric>(q.metrics).map(([k, m]) => (
@@ -125,9 +125,9 @@ export function SummaryScreen({ symbol, open }: { symbol: string; open: (s: stri
         <section className="sec" aria-label="Bull and bear">
           <h2>Bull vs. bear</h2>
           <h3 className="sub-h">Bull</h3>
-          <ul className="summary-points">{d.arguments.bull.map((x: any, i: number) => <li key={i}>{x.point} {x.sources[0] && <SourceLink url={x.sources[0].url}>{x.sources[0].source}</SourceLink>}</li>)}</ul>
+          <ul className="summary-points">{d.arguments.bull.map((x: any, i: number) => <li key={i}>{x.point} {x.sources[0] && <SourceLink url={x.sources[0].url ?? d.sources?.screener}>{x.sources[0].source}</SourceLink>}</li>)}</ul>
           <h3 className="sub-h">Bear</h3>
-          <ul className="summary-points">{d.arguments.bear.map((x: any, i: number) => <li key={i}>{x.point} {x.sources[0] && <SourceLink url={x.sources[0].url}>{x.sources[0].source}</SourceLink>}</li>)}</ul>
+          <ul className="summary-points">{d.arguments.bear.map((x: any, i: number) => <li key={i}>{x.point} {x.sources[0] && <SourceLink url={x.sources[0].url ?? d.sources?.screener}>{x.sources[0].source}</SourceLink>}</li>)}</ul>
           {d.arguments.swing && <p className="swing"><span className="eyebrow">What decides it</span>{d.arguments.swing}</p>}
         </section>
       )}
@@ -141,7 +141,7 @@ export function SummaryScreen({ symbol, open }: { symbol: string; open: (s: stri
 
       {d.missing?.map((m: string) => <p key={m} className="flag">{m}</p>)}
       {d.built_by === "groq" && <p className="meta">Read by a free model, which FINN has checked less than its other companies. Open the sources before relying on a verdict.</p>}
-      <p className="asof">From filed results, earnings calls and annual reports only. This isn't investment advice. Open any source and check.</p>
+      <p className="asof">From filed results, earnings calls and annual reports, with multi-year figures from screener.in. This isn't investment advice. Open any source and check.</p>
     </article>
   );
 }

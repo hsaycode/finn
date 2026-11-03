@@ -18,7 +18,7 @@ export interface Person {
 export interface Metric { value: number | null; qoq: number | null; yoy: number | null; prev: number | null; year_ago: number | null }
 
 export interface ResultsCard {
-  label: string; period_end: string; basis: string; audited: boolean; banking: boolean; source: string;
+  label: string; period_end: string; basis: string; audited: boolean; banking: boolean; source: string; source_label?: string;
   metrics: Record<string, Metric>; margin?: number | null; gross_npa?: number | null; net_npa?: number | null;
   format?: string; sector_stats?: { label: string; value: number; unit: string }[]; built?: string | null;
   flags: { kind: string; text: string }[];
@@ -42,11 +42,11 @@ export interface Event {
 
 export interface Brief {
   top: Event[]; notable: Event[]; routine: Event[]; total_filings: number; latest_notable: Event | null;
-  meta: { last_refresh: string | null; window_start: string; unreached?: string[]; oldest_filing?: string | null };
+  meta: { last_refresh: string | null; window_start: string; unreached?: string[]; oldest_filing?: string | null; newest_filing?: string | null; gap?: { from: string; to: string } | null };
 }
 
 export interface Session { d: string; c: number; m: number; x: number | null; ok: boolean }
-export interface Holding { symbol: string; name: string; banking: boolean; filings: { d: string; title: string; category: string }[]; last: { date: string; close: number; move_pct: number; vol_x: number | null } | null; series: Session[] }
+export interface Holding { symbol: string; name: string; banking: boolean; filings: { d: string; title: string; category: string; url?: string | null }[]; last: { date: string; close: number; move_pct: number; vol_x: number | null } | null; series: Session[] }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, init);
@@ -125,6 +125,12 @@ export const METRIC_NAMES: Record<string, string> = {
 };
 
 export const fromSource = (label: string) => (label.includes("annual report") ? label : `${label} call`);
+
+/** Where a reader can check what FINN says. */
+export const yahooUrl = (symbol: string) => `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}.NS`;
+export const nseUrl = (symbol: string) => `https://www.nseindia.com/get-quotes/equity?symbol=${encodeURIComponent(symbol)}`;
+export const METHOD_URL = "https://github.com/hsaycode/finn/blob/main/finn/docs/RESULTS.md#how-much-does-each-kind-of-filing-matter";
+export const FILINGS_URL = "https://www.nseindia.com/companies-listing/corporate-filings-announcements";
 
 export const VERDICT: Record<Verdict, { label: string; icon: string; color: string }> = {
   delivered: { label: "Delivered", icon: "✓", color: "var(--good)" },

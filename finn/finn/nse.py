@@ -6,8 +6,10 @@ Filing" in early 2025, so history spans two endpoints.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import urllib.parse
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
@@ -16,6 +18,8 @@ from bs4 import BeautifulSoup
 from .net import fetch, fetch_json
 
 BASE = "https://www.nseindia.com/api"
+# NSE's archive host publishes the same filings as RSS, and it's a separate door if a cloud host's address is refused by the API.
+ARCHIVE_RSS = "https://nsearchives.nseindia.com/content/RSS"
 HEADERS = {"Referer": "https://www.nseindia.com/"}
 _IF_TYPE = urllib.parse.quote("Integrated Filing- Financials")
 
@@ -88,6 +92,71 @@ def announcements(symbol: str | None, frm: datetime, to: datetime, ttl: float = 
     return out
 
 
+def _feed(name: str, ttl: float) -> list[dict]:
+    root = ET.fromstring(fetch(f"{ARCHIVE_RSS}/{name}.xml", ttl=ttl, headers=HEADERS, retries=2))
+    return [{k: (item.findtext(k) or "").strip() for k in ("title", "link", "description", "pubDate")} for item in root.iter("item")]
+
+
+def feed_filings(ttl: float = 600) -> list[Filing]:
+    """Today's filings across the market, with the links and labels the API gives. Each has no symbol yet, only a company name."""
+    out = []
+    for r in _feed("Online_announcements", ttl):
+        ts = _dt(r["pubDate"])
+        # The API lists documents only. The feed adds fund NAVs with no link and XBRL copies of the same filings.
+        if not ts or not r["link"].lower().endswith(".pdf"):
+            continue
+        text, _, subject = r["description"].partition("|SUBJECT:")
+        out.append(Filing(
+            id=f"rss-{hashlib.sha256(r['link'].encode()).hexdigest()[:16]}", symbol="", name=r["title"], ts=ts.isoformat(),
+            raw_category=subject.strip(), text=_strip_boilerplate(text, r["title"]), pdf_url=r["link"],
+        ))
+    return out
+
+
+def feed_results(ttl: float = 600) -> list[dict]:
+    """The latest results filed, each with its XBRL. It holds only the last 20, so a busy evening can outrun it."""
+    return [{"name": r["title"], "xbrl": r["link"], "filed_at": (_dt(r["pubDate"]) or datetime.min).isoformat()}
+            for r in _feed("Integrated_Filing_Financials", ttl) if r["link"].lower().endswith(".xml")]
+
+
+def quarter_from_xbrl(xbrl_url: str, filed_at: str | None = None) -> Quarter | None:
+    """An integrated filing says which company, period and basis it covers, so it needs no index to read."""
+    xml = fetch(xbrl_url, ttl=None, headers=HEADERS, retries=2)
+    soup = BeautifulSoup(xml, "xml")
+
+    def first(tag: str) -> str:
+        el = soup.find(tag)
+        return el.text.strip() if el else ""
+
+    symbol, end = first("Symbol"), first("DateOfEndOfReportingPeriod")
+    if not symbol or not end:
+        return None
+    meta = {
+        "period_end": end, "basis": "consolidated" if first("NatureOfReportStandaloneConsolidated") == "Consolidated" else "standalone",
+        "xbrl": xbrl_url, "audited": first("WhetherResultsAreAuditedOrUnaudited") == "Audited", "filed_at": filed_at,
+    }
+    return parse_xbrl(xml, symbol, meta)
+
+
+def feed_events(ttl: float = 3600) -> list[dict]:
+    """Newly announced board meetings and ex-dates, for each with the company's name."""
+    today = datetime.now().date().isoformat()
+    out = []
+    for r in _feed("Board_Meetings", ttl):
+        m = re.search(r"Meeting Date:\s*([\d]{1,2}-[A-Za-z]{3}-\d{4})", r["description"])
+        d = _day(m[1]) if m else None
+        if d and d >= today:
+            results = bool(re.search(r"financial results", r["description"], re.I))
+            out.append({"name": r["title"], "date": d, "kind": "results" if results else "board", "title": "Results due: board meets" if results else "Board meeting"})
+    for r in _feed("Corporate_action", ttl):
+        m = re.match(r"(.*?)\s*-\s*Ex-Date:\s*(\S+)", r["title"])
+        d = _day(m[2]) if m else None
+        purpose = re.search(r"PURPOSE:([^|]*)", r["description"])
+        if d and d >= today:
+            out.append({"name": m[1], "date": d, "kind": "action", "title": f"Goes ex: {(purpose[1].strip().title() if purpose else 'corporate action')}"})
+    return out
+
+
 def _day(value: str | None) -> str | None:
     """NSE writes dates as 30-Oct-2026. Empty ones arrive as a dash."""
     try:
@@ -148,6 +217,7 @@ class Quarter:
     filed_at: str | None = None
     source_url: str | None = None
     months: int = 3
+    provider: str = "xbrl"  # screener when NSE couldn't be reached
     segments: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 

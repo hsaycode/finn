@@ -122,7 +122,11 @@ def brief(hours: int = Query(24, ge=1, le=24 * 60), since: str | None = None, un
     in_window = sum(1 for r in rows if start <= r["ts"] <= end)
     last_run = get_meta("last_summary") or {}
     oldest = conn.execute("SELECT MIN(ts) m FROM filings").fetchone()["m"]
-    meta = {"last_refresh": get_meta("last_refresh"), "window_start": start, "unreached": last_run.get("failed", []), "oldest_filing": oldest[:10] if oldest else None}
+    newest_held = conn.execute(f"SELECT MAX(ts) m FROM filings WHERE symbol IN ({_marks(mine)})", mine).fetchone()["m"]
+    meta = {
+        "last_refresh": get_meta("last_refresh"), "window_start": start, "unreached": last_run.get("failed", []), "oldest_filing": oldest[:10] if oldest else None,
+        "newest_filing": newest_held, "gap": get_meta("filings_gap"),
+    }
     latest_notable = None
     if not top:
         # A quiet weekend shouldn't look broken: show what last mattered instead of a blank screen.
@@ -179,7 +183,8 @@ def _card_for(event: dict) -> dict | None:
     # Show the quarter whose filing is closest to this event, not simply the newest one.
     ts = datetime.fromisoformat(event["ts"])
     eligible = [q for q in qs if q.period_end <= ts.date().isoformat()]
-    if not eligible:
+    # New results with their figures not in yet mustn't wear the previous quarter's numbers.
+    if not eligible or (ts.date() - datetime.fromisoformat(eligible[0].period_end).date()).days > pipeline.MAX_DAYS_TO_REPORT:
         return None
     return research.results_card(event["symbol"], eligible)
 
@@ -215,12 +220,17 @@ def portfolio(symbols: str | None = None):
         last = sig[-1] if sig else None
         # So a price move can be shown next to what was filed around it, whatever the brief's window.
         recent = conn.execute(
-            "SELECT substr(ts,1,10) d, title, category FROM filings WHERE symbol=? AND score>=? AND ts>=? ORDER BY score DESC",
+            "SELECT substr(ts,1,10) d, ts, title, category, thread, pdf_url FROM filings WHERE symbol=? AND score>=? AND ts>=? ORDER BY score DESC",
             (c["symbol"], C.NOTABLE_AT, (datetime.now() - timedelta(days=200)).isoformat()),
         ).fetchall()
+        # A story is told from its latest filing, so "the company's response is awaited" doesn't outlive the response.
+        latest = {}
+        for r in sorted(recent, key=lambda r: r["ts"]):
+            if r["thread"] and r["category"] != "results":
+                latest[r["thread"]] = r
         out.append({
             "symbol": c["symbol"], "name": c["name"], "banking": bool(c["banking"]),
-            "filings": [{"d": r["d"], "category": r["category"], "title": "Results filed" if r["category"] == "results" else r["title"]} for r in recent],
+            "filings": [{"d": r["d"], "category": r["category"], "url": latest.get(r["thread"], r)["pdf_url"], "title": "Results filed" if r["category"] == "results" else latest.get(r["thread"], r)["title"]} for r in recent],
             "last": last, "series": [{"d": s["date"], "c": s["close"], "m": s["move_pct"], "x": s["vol_x"], "ok": s["enough_history"]} for s in sig[-130:]],
         })
     return {"companies": out, "as_of": max((c["last"]["date"] for c in out if c["last"]), default=None)}
@@ -487,19 +497,21 @@ def calendar(symbols: str | None = None, days: int = Query(30, ge=1, le=120)):
     for r in conn.execute(f"SELECT * FROM events WHERE symbol IN ({_marks(mine)}) AND date>=? AND date<=? ORDER BY date, symbol", (*mine, today.isoformat(), last)):
         event = dict(r)
         if r["kind"] == "results":
-            event["due"] = _promises_due(r["symbol"], r["date"])
+            due = _promises_due(r["symbol"], r["date"])
+            event["due"] = [p["claim"] for p in due]
+            event["due_sources"] = [{"url": p.get("url"), "label": f"{p.get('call_label')} call, p.{p.get('page')}"} for p in due]
         out.append(event)
     return {"events": out}
 
 
-def _promises_due(symbol: str, meeting: str) -> list[str]:
+def _promises_due(symbol: str, meeting: str) -> list[dict]:
     """What this company promised for the quarter these results will cover, so you know what to look for."""
     dossier = research.load(symbol)
     claims = []
     for p in ((dossier or {}).get("promises") or {}).get("promises", []):
         due = promises.parse_period(p.get("period"))
         if due and p["verdict"] == promises.NOT_DUE and due["end"] < meeting and (datetime.fromisoformat(meeting) - datetime.fromisoformat(due["end"])).days <= 100:
-            claims.append(p["claim"])
+            claims.append(p)
     return claims[:3]
 
 
@@ -594,12 +606,29 @@ def push_unsubscribe(endpoint: str = Body(..., embed=True, max_length=800)):
     return {"subscribed": False}
 
 
+@app.get("/api/companies")
+def companies():
+    """Every company with a report ready, your default holdings first, with its record so the list can be read at a glance."""
+    conn = db()
+    held = {r["symbol"] for r in conn.execute("SELECT symbol FROM companies WHERE in_portfolio=1")}
+    out = []
+    for r in conn.execute("SELECT symbol, data FROM dossiers ORDER BY symbol"):
+        d = json.loads(r["data"])
+        pr = d.get("promises") or {}
+        out.append({
+            "symbol": r["symbol"], "name": d.get("name"), "held": r["symbol"] in held,
+            "kept": (pr.get("tally") or {}).get("delivered"), "checked": pr.get("testable") or 0, "open": (pr.get("tally") or {}).get("not_due") or 0,
+        })
+    return {"companies": out}
+
+
 @app.get("/api/status")
 def status():
     conn = db()
     calls = conn.execute("SELECT COUNT(*) n, COALESCE(SUM(cost_usd),0) usd FROM llm_calls").fetchone()
+    last_run = get_meta("last_summary") or {}
     return {
-        "last_refresh": get_meta("last_refresh"),
+        "last_refresh": get_meta("last_refresh"), "sources": last_run.get("sources"), "prices_failed": last_run.get("prices_failed"), "gap": get_meta("filings_gap"),
         "model": llm.provider(), "chat_model": llm.provider_for("ask_v1"),
         "filings": conn.execute("SELECT COUNT(*) n FROM filings").fetchone()["n"],
         "dossiers": [r["symbol"] for r in conn.execute("SELECT symbol FROM dossiers ORDER BY symbol")],
@@ -620,10 +649,11 @@ def _refresh_loop() -> None:
         age = datetime.now() - datetime.fromisoformat(last) if last else timedelta(days=45)
         if age >= timedelta(minutes=minutes):
             try:
-                pipeline.refresh(days=min(age.days + 2, 45), log=lambda *_: None)
+                # The host's logs are the only way to learn why a source stopped answering.
+                pipeline.refresh(days=min(age.days + 2, 45), log=lambda line: print(f"refresh: {line}", flush=True))
                 push.send_new(lambda move, vol, muted: alerts(move, vol, ",".join(muted), 3)["messages"])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"refresh failed: {type(e).__name__}: {e}", flush=True)
         time.sleep(minutes * 60)
 
 

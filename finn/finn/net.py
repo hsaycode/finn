@@ -23,6 +23,7 @@ UA = (
 _MIN_GAP = {"www.screener.in": 2.5, "www.nseindia.com": 0.6, "nsearchives.nseindia.com": 0.4, "www.bseindia.com": 0.8}
 _last_hit: dict[str, float] = {}
 _client: httpx.Client | None = None
+_nse_cookies = False
 
 
 class FetchError(RuntimeError):
@@ -127,6 +128,11 @@ def fetch(url: str, *, ttl: float | None = 3600, headers: dict | None = None, re
             error = f"HTTP {status}"
             if r.status_code in (404, 410):
                 break
+            # NSE can turn away a first visit that has none of its cookies, and its home page hands them out.
+            global _nse_cookies
+            if r.status_code in (401, 403) and host == "www.nseindia.com" and not _nse_cookies:
+                _nse_cookies = True
+                client().get("https://www.nseindia.com/")
             if r.status_code == 429:
                 time.sleep(float(r.headers.get("retry-after", 10)))
         except httpx.HTTPError as e:

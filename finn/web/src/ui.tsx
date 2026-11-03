@@ -19,6 +19,18 @@ export function SourceLink({ url, children }: { url: string | null | undefined; 
   );
 }
 
+/** The line under anything FINN states: where it came from, one tap away. */
+export function Cited({ items, label = "Source" }: { items: { label: string; url?: string | null }[]; label?: string }) {
+  const shown = items.filter((x) => x.url);
+  if (!shown.length) return null;
+  return (
+    <p className="cited">
+      <span className="cited-label">{label}</span>
+      {shown.map((x) => <SourceLink key={`${x.label}${x.url}`} url={x.url}>{x.label}</SourceLink>)}
+    </p>
+  );
+}
+
 /** Thin bars from a shared baseline. Tap a bar to read it; the first and last are always labelled. */
 export function Bars({ title, labels, values, format, tone }: {
   title: string; labels: string[]; values: (number | null)[]; format: (v: number) => string; tone?: "bad-negative";

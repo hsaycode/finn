@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { DEFAULT_SETTINGS, METRIC_NAMES, ago, api, cr, day, load, marketMoment, mine, save, signed, type Brief, type Event, type Holding, type Person, type Pin, type ResultsCard, type Settings } from "./lib";
+import { DEFAULT_SETTINGS, FILINGS_URL, METHOD_URL, METRIC_NAMES, ago, api, cr, day, fromSource, load, marketMoment, mine, nseUrl, save, signed, yahooUrl, type Brief, type Event, type Holding, type Person, type Pin, type ResultsCard, type Settings } from "./lib";
 import { MovingNow, alertsPath, type Alert } from "./Chat";
-import { Collapse, SourceLink, VerdictTag } from "./ui";
+import { Cited, Collapse, SourceLink, VerdictTag } from "./ui";
 
 const WINDOWS: [string, number][] = [["24 hours", 24], ["3 days", 72], ["7 days", 168], ["30 days", 720]];
 interface Span { from: string; to: string }
 const isoDay = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 
-interface Mover { symbol: string; date: string; move: number; volX: number | null; because: string[]; related?: string }
+interface Mover { symbol: string; date: string; move: number; volX: number | null; because: string[]; related?: string; relatedUrl?: string | null }
 
 function movers(holdings: Holding[], settings: Settings, hours: number, span: Span | null): Mover[] {
   const out: Mover[] = [];
@@ -22,7 +22,7 @@ function movers(holdings: Holding[], settings: Settings, hours: number, span: Sp
       if (s.ok && s.x !== null && s.x >= settings.volX) because.push(`volume ${s.x.toFixed(1)}×`);
       if (!because.length) continue;
       const near = h.filings.find((f) => Math.abs(new Date(f.d).getTime() - new Date(s.d).getTime()) <= 864e5);
-      out.push({ symbol: h.symbol, date: s.d, move: s.m, volX: s.x, because, related: near?.title });
+      out.push({ symbol: h.symbol, date: s.d, move: s.m, volX: s.x, because, related: near?.title, relatedUrl: near?.url });
     }
   }
   return out.sort((a, b) => Math.abs(b.move) - Math.abs(a.move));
@@ -53,6 +53,7 @@ function ResultsTable({ r }: { r: ResultsCard }) {
       {r.sector_stats && r.sector_stats.length > 0 && <p className="meta num">{r.sector_stats.map((s) => `${s.label} ${s.value.toLocaleString("en-IN")}${s.unit}`).join(" · ")}</p>}
       {r.built && <p className="meta">{r.built}</p>}
       {r.flags.map((f) => <p key={f.kind} className="flag">{f.text}</p>)}
+      <Cited label="Figures" items={[{ label: r.source_label ?? "Filed results (XBRL)", url: r.source }]} />
     </>
   );
 }
@@ -114,7 +115,7 @@ function EventBody({ e, open, action }: { e: Event; open: (s: string) => void; a
     <>
       {e.evidence && e.evidence.lift >= 1.2 && (
         <p className="evidence">
-          Filings like this moved the stock sharply <b className="num">{Math.round(e.evidence.big_move_pct)}%</b> of the time, against <b className="num">{Math.round(e.evidence.quiet_pct)}%</b> on a quiet day. <span className="num">{e.evidence.n.toLocaleString("en-IN")}</span> filings studied.
+          Filings like this moved the stock sharply <b className="num">{Math.round(e.evidence.big_move_pct)}%</b> of the time, against <b className="num">{Math.round(e.evidence.quiet_pct)}%</b> on a quiet day. <span className="num">{e.evidence.n.toLocaleString("en-IN")}</span> filings studied. <SourceLink url={METHOD_URL}>How this was measured</SourceLink>
         </p>
       )}
       {e.results && <ResultsTable r={e.results} />}
@@ -125,12 +126,21 @@ function EventBody({ e, open, action }: { e: Event; open: (s: string) => void; a
             <div key={i} className="check-row">
               <VerdictTag v={p.verdict} />
               <p>{p.claim}{p.actual ? <b className="num"> Actual {p.actual}.</b> : null}</p>
+              <Cited items={[
+                { label: `${fromSource(p.call_label)}, p.${p.page}`, url: p.url },
+                ...(p.evidence ? [{ label: `${fromSource(p.evidence.call_label)}, p.${p.evidence.page}`, url: p.evidence.url }] : []),
+              ]} />
             </div>
           ))}
         </div>
       )}
       {e.promise_check && e.promise_check.upcoming.length > 0 && (
-        <p className="meta">Next due: {e.promise_check.upcoming.map((p) => `${p.claim} (${p.period})`).join("; ")}</p>
+        <div className="meta">
+          <b>Next due</b>
+          {e.promise_check.upcoming.map((p, i) => (
+            <p key={i} className="next-due">{p.claim} ({p.period}) <SourceLink url={p.url}>{fromSource(p.call_label)}, p.{p.page}</SourceLink></p>
+          ))}
+        </div>
       )}
       {d.person && <PersonBrief p={d.person} company={e.name} />}
       {d.rating && (
@@ -159,7 +169,7 @@ function EventBody({ e, open, action }: { e: Event; open: (s: string) => void; a
         </Collapse>
       )}
       <div className="card-foot">
-        <SourceLink url={e.pdf_url}>Filing</SourceLink>
+        <SourceLink url={e.pdf_url}>Source filing</SourceLink>
         <button className="link" onClick={() => open(e.symbol)}>Track record</button>
         {action}
       </div>
@@ -182,7 +192,7 @@ function TopCard({ e, done, onDone, open, pinned }: { e: Event; done: boolean; o
         <>
           <p className="why">{e.reason}</p>
           {pinned && <p className="pinned">You're watching: {pinned.claim}</p>}
-          <EventBody e={e} open={open} action={<button className="done" aria-pressed={false} onClick={onDone}>Done</button>} />
+          <EventBody e={e} open={open} action={<button className="done" aria-pressed={false} onClick={onDone}><span aria-hidden="true">✓ </span>Done</button>} />
         </>
       )}
       {done && <button className="done done-undo" aria-pressed={true} onClick={onDone}>Undo</button>}
@@ -219,6 +229,7 @@ function SinceLastVisit({ settings, open, goChat }: { settings: Settings; open: 
           <li key={`${a.symbol}${a.ts}${a.title}`}>
             <button className="ticker" onClick={() => open(a.symbol)}>{a.symbol}</button>
             <span className={a.kind === "move" ? `num ${(a.move ?? 0) >= 0 ? "up" : "down"}` : ""}>{a.title}</span>
+            <SourceLink url={a.url ?? yahooUrl(a.symbol)}>{a.url ? "Filing" : "Prices"}</SourceLink>
           </li>
         ))}
       </ul>
@@ -227,7 +238,24 @@ function SinceLastVisit({ settings, open, goChat }: { settings: Settings; open: 
   );
 }
 
-interface Upcoming { symbol: string; date: string; kind: string; title: string; due?: string[] }
+interface Upcoming { symbol: string; date: string; kind: string; title: string; due?: string[]; due_sources?: { url?: string | null; label: string }[] }
+
+/** A first visit needs a sentence on what this is. It goes for good once dismissed. */
+function FirstVisit() {
+  const [seen, setSeen] = useState(() => load<boolean>("finn.intro.seen", false));
+  if (seen) return null;
+  return (
+    <section className="intro" aria-label="How FINN works">
+      <p className="intro-lead">FINN reads every filing across your holdings and keeps only what matters.</p>
+      <ul>
+        <li>Tick items off until it says "That's everything".</li>
+        <li>Everything it tells you links to its source. Look for the <span aria-hidden="true">↗</span> arrow.</li>
+        <li>Research checks what management promised against what it delivered.</li>
+      </ul>
+      <button className="link" onClick={() => { setSeen(true); save("finn.intro.seen", true); }}>Got it</button>
+    </section>
+  );
+}
 
 /** Only dates a company has filed with the exchange. FINN doesn't estimate when results will come. */
 function ComingUp({ open }: { open: (s: string) => void }) {
@@ -247,7 +275,15 @@ function ComingUp({ open }: { open: (s: string) => void }) {
             <span className="when num">{day(e.date)}</span>
             <button className="ticker" onClick={() => open(e.symbol)}>{e.symbol}</button>
             <span>{e.title}</span>
-            {e.due && e.due.length > 0 && <p className="meta coming-due">They promised for this quarter: {e.due.join("; ")}</p>}
+            <SourceLink url={nseUrl(e.symbol)}>NSE</SourceLink>
+            {e.due && e.due.length > 0 && (
+              <div className="meta coming-due">
+                <b>They promised for this quarter</b>
+                {e.due.map((claim, i) => (
+                  <p key={claim} className="next-due">{claim} {e.due_sources?.[i]?.url && <SourceLink url={e.due_sources[i].url}>{e.due_sources[i].label}</SourceLink>}</p>
+                ))}
+              </div>
+            )}
           </li>
         ))}
       </ul>
@@ -354,12 +390,12 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
       {moved.slice(0, 6).map((m) => (
         <div key={`${m.symbol}${m.date}`} className="mover">
           <button className="ticker" onClick={() => open(m.symbol)}>{m.symbol}</button>
-          <span className="num mover-figs">
+          <a className="num mover-figs figs-link" href={yahooUrl(m.symbol)} target="_blank" rel="noopener noreferrer" aria-label={`${m.symbol} on Yahoo Finance`}>
             <span className={m.move >= 0 ? "up" : "down"}>{signed(m.move)}</span>
-            {m.volX !== null && <span> · {m.volX.toFixed(1)}× vol</span>}
-          </span>
+            {m.volX !== null && <span> · {m.volX.toFixed(1)}× vol</span>} ↗
+          </a>
           {!latestClose && <span className="when mover-date">{day(m.date)}</span>}
-          {m.related && <p className="mover-note">Filed around then: {m.related}</p>}
+          {m.related && <p className="mover-note">Filed around then: {m.relatedUrl ? <a href={m.relatedUrl} target="_blank" rel="noopener noreferrer">{m.related} ↗</a> : m.related}</p>}
         </div>
       ))}
     </section>
@@ -371,6 +407,18 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
         <div className="mast-row">
           <span className="wordmark">FINN</span>
           <span className="mast-date">{new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })}</span>
+          {top.length > 0 && "speechSynthesis" in window && (
+            <button
+              className="chip chip-listen"
+              onClick={() => {
+                if (speaking) speechSynthesis.cancel();
+                else listen(top);
+                setSpeaking(!speaking);
+              }}
+            >
+              {speaking ? "Stop" : "Listen"}
+            </button>
+          )}
         </div>
         <p className="moment">{moment.label} · {moment.note}</p>
         {brief ? (
@@ -391,18 +439,6 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
             <button key={h} className={`chip ${h === hours && !custom ? "on" : ""}`} aria-pressed={h === hours && !custom} onClick={() => pickWindow(h)}>{label}</button>
           ))}
           <button className={`chip ${custom ? "on" : ""}`} aria-pressed={custom} onClick={() => { setCustom(true); setDate({}); }}>Custom</button>
-          {top.length > 0 && "speechSynthesis" in window && (
-            <button
-              className="chip chip-listen"
-              onClick={() => {
-                if (speaking) speechSynthesis.cancel();
-                else listen(top);
-                setSpeaking(!speaking);
-              }}
-            >
-              {speaking ? "Stop" : "Listen"}
-            </button>
-          )}
         </div>
         {custom && (
           <div className="daterange">
@@ -412,6 +448,8 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
           </div>
         )}
       </header>
+
+      <FirstVisit />
 
       <SinceLastVisit settings={settings} open={open} goChat={goChat} />
 
@@ -488,10 +526,14 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
       )}
 
       {brief?.meta.last_refresh && (
-        <p className="asof">
-          Filings checked {ago(brief.meta.last_refresh)}
-          {brief.meta.unreached?.length ? `. Couldn't reach ${brief.meta.unreached.join(", ")} on the last try.` : ""}
-        </p>
+        <div className="asof">
+          <p>
+            Filings checked {ago(brief.meta.last_refresh)}
+            {brief.meta.unreached?.length && brief.meta.newest_filing ? `. FINN couldn't check for new filings just now, so this shows what it holds up to ${day(brief.meta.newest_filing)}.` : ""}
+          </p>
+          {brief.meta.gap && <p>Filings from {day(brief.meta.gap.from)} to {day(brief.meta.gap.to)} may be missing, because NSE's full list couldn't be reached from this server. Newer ones come from its live feed.</p>}
+          <Cited label="Sources" items={[{ label: "NSE filings", url: FILINGS_URL }, { label: "Yahoo Finance prices", url: "https://finance.yahoo.com/" }]} />
+        </div>
       )}
     </>
   );

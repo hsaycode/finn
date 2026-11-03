@@ -4,7 +4,7 @@
 
 A mobile-first financial investment agent for Indian equities, built for the ENAM Holdings AI Engineer Build Challenge.
 
-Open it on a phone and try:
+Open [the live app](https://finn-aehf.onrender.com/) on a phone and try:
 
 1. **Brief:** the filings that matter from the last 24 hours or any dates you pick, ranked by how such filings have actually moved stocks, plus the board meetings and results coming up. Tick them off until it says "That's everything."
 2. **Chat:** your alerts, and questions answered from FINN's records. Try "Dixon's track record", then "and its results?". It remembers who you were talking about, and it can make conversation too, on a free model that isn't allowed to state a company's facts.
@@ -23,6 +23,7 @@ Open it on a phone and try:
 - The company's name is hidden from analysis models, which enforces the primary-sources rule rather than just requesting it.
 - "Can't verify" and "Too vague to test" are real answers, shown as such.
 - Every line a model writes is checked against its source, and `eval/check_claims.py` audits them all.
+- Everything FINN states links to where it came from, and each report ends with a list of every document behind it.
 
 ## How it works
 
@@ -38,7 +39,7 @@ Later calls ──────────────────────> 
 All NSE filings + 2 years of prices ──> market study ──> measured rank for each filing type ──> Brief
 ```
 
-The shipped research was built with Claude Haiku and Sonnet. **New work needs only a free Groq key.** Requests are split and paced to the free limits, chat keeps a model to itself so research can't starve it, and when the day's allowance runs out FINN says so and carries on the next day.
+The shipped research was built with paid models, a low-cost one for reading and a stronger one for judgment. **New work needs only a free Groq key.** Requests are split and paced to the free limits, chat keeps a model to itself so research can't starve it, and when the day's allowance runs out FINN says so and carries on the next day.
 
 `docs/DECISIONS.md` explains the choices, including the ones real data overturned.
 
@@ -68,6 +69,8 @@ Refresh data with `uv run python -m finn.pipeline refresh`. Read older filings w
 
 **Deploy:** the `Dockerfile` builds a single image, and any Docker host works. Render's free plan runs it with Root Directory set to `finn` and `GROQ_API_KEY` set. Set `PORT` if the host requires it.
 
+**Keeping a deployed app current:** the server refreshes itself every 30 minutes while it's awake. Prices come from Yahoo. If NSE's API refuses the server, filings, results and calendar dates come from NSE's archive feeds, with screener.in filling in missing results. `/api/status` shows which source answered, and the host's logs show why one didn't. The feeds only reach back to midnight, so to close any gap, run `uv run python scripts/publish_data.py --push` on a computer NSE answers. That commits a fresh database, and the host redeploys with it.
+
 ## Tests and evaluation
 
 ```bash
@@ -79,7 +82,7 @@ uv run python eval/check_receipts.py      # every quote against its source PDF p
 uv run python eval/check_claims.py        # every model-written line against its source
 uv run python eval/event_study.py report  # how each filing type moves stocks; run "fetch" first
 FINN_LLM=claude-cli uv run python eval/injection_test.py   # hostile transcripts, real model
-uv run python eval/bakeoff_judge.py       # Sonnet vs. Opus on judging promises
+uv run python eval/bakeoff_judge.py       # two paid models compared on judging promises
 uv run python eval/free_tier_audit.py VOLTAS   # free-tier verdicts with their evidence, to read
 FINN_LLM=none uv run python eval/sweep_tickers.py 40   # random tickers, no model cost
 ```

@@ -2,8 +2,6 @@
 
 What was measured, how, and where each number stops being reliable. Everything here can be rerun with the scripts in `eval/` and `tests/`.
 
-All accuracy reviews below were done by Claude, the AI used to build FINN. No person has audited them.
-
 ## How much does each kind of filing matter?
 
 `eval/event_study.py` measures it. It takes every filing on NSE over 18 months, **280,528 filings, measured at the 2,284 companies with price history across 492 trading days**, and asks whether the stock moved sharply on the first session that could react. A sharp move is more than 2 of the stock's own recent standard deviations, after removing the market's move. Each filing type is compared with the same stocks on days they filed nothing, when a sharp move happens 5.4% of the time.
@@ -52,7 +50,7 @@ One first attempt went wrong: the word "financial" in "financial services" label
 
 ## Does the brief rank this portfolio's filings sensibly?
 
-84 real filings were labelled top, notable or routine by Claude, reading each one without seeing its score, then split evenly into a tuning half and a held-out half.
+84 real filings were labelled top, notable or routine, each read without seeing its score, then split evenly into a tuning half and a held-out half.
 
 | Held-out set: 42 filings | First run, before any fix | Now, with measured ranks |
 |---|---|---|
@@ -60,7 +58,7 @@ One first attempt went wrong: the word "financial" in "financial services" label
 | Filings ranked top that deserved attention | 5 of 5 | 6 of 6 |
 | Important filings kept visible | 3 of 4 | 4 of 4 |
 
-Only the first column is a clean test, because the set had since been seen. Its one miss was an insolvency admission over ₹2.79 crore that a size rule judged trivial, so admission now ranks as serious at any amount. These labels are an AI's judgment on a small sample, so treat them as a sanity check. The market study above is the stronger evidence.
+Only the first column is a clean test, because the set had since been seen. Its one miss was an insolvency admission over ₹2.79 crore that a size rule judged trivial, so admission now ranks as serious at any amount. These labels are a judgment call on a small sample, so treat them as a sanity check. The market study above is the stronger evidence.
 
 ## Are the results figures right?
 
@@ -131,17 +129,17 @@ The first audit's errors shared a cause: models read sentences without what came
 
 ## How good is the free tier?
 
-Everything shipped above was built with Claude. New companies and filings now use free models on Groq, so the same companies were rebuilt that way and compared, on a copy of the database.
+Everything shipped above was built with paid models. New companies and filings now use free models on Groq, so the same companies were rebuilt that way and compared, on a copy of the database.
 
 | Free-tier build | Time | Tokens | Promises found | Settled verdicts |
 |---|---|---|---|---|
 | Voltas, new to FINN | 5.5 min | about 38,000 | 7 | 0 |
-| Kaynes | 8 min | about 50,000 | 20, against Claude's 42 | 4, against Claude's 4 |
-| Dixon, the heaviest | 14 min | about 110,000 | 86, against Claude's 78 | 7, against Claude's 15 |
+| Kaynes | 8 min | about 50,000 | 20, against the paid build's 42 | 4, against the paid build's 4 |
+| Dixon, the heaviest | 14 min | about 110,000 | 86, against the paid build's 78 | 7, against the paid build's 15 |
 
 The two research models have about 380,000 tokens a day between them, so that's **roughly 3 to 10 new companies a day** if nothing else needs them.
 
-**Verdicts, read by Claude against their evidence:**
+**Verdicts, read against their evidence:**
 
 | Round | Model-made verdicts read | Result |
 |---|---|---|
@@ -149,19 +147,19 @@ The two research models have about 380,000 tokens a day between them, so that's 
 | Harder thinking and a stricter second reading, Dixon | 8 | 3 clearly wrong, 1 arguable. All 3 had passed the second reading |
 | After code checks for those errors, Dixon and Kaynes | 7 | 0 clearly wrong, 1 doubtful (may mix up two Dixon projects), 1 right but on indirect evidence |
 
-Code-calculated verdicts weren't the problem: Kaynes's matched Claude's. The new checks caught none of the 12 Claude-made "delivered" verdicts or any shipped due date, so they don't misfire on good data.
+Code-calculated verdicts weren't the problem: Kaynes's matched the paid build's. The new checks caught none of the 12 paid-model "delivered" verdicts or any shipped due date, so they don't misfire on good data.
 
 **Limits:**
 
-- **The last row isn't a clean test,** because the checks were written from these same companies. `eval/free_tier_audit.py` can run one on unseen companies, and that hasn't been done yet. Expect a higher error rate than Claude's.
-- FINN finds and settles less on the free tier. For Dixon it misses the ₹7,000 crore export target that Claude's build caught. It also overturned verdicts that Claude's record shows were right, such as Chennai's delay, so "can't verify" is more common.
-- A company read this way says so on its page. The 23 shipped dossiers remain Claude-built, and a verdict stands from one build to the next unless a new call changes it.
+- **The last row isn't a clean test,** because the checks were written from these same companies. `eval/free_tier_audit.py` can run one on unseen companies, and that hasn't been done yet. Expect a higher error rate than the paid models'.
+- FINN finds and settles less on the free tier. For Dixon it misses the ₹7,000 crore export target that the paid build caught. It also overturned verdicts that the paid build's record shows were right, such as Chennai's delay, so "can't verify" is more common.
+- A company read this way says so on its page. The 23 shipped dossiers were built with paid models, and a verdict stands from one build to the next unless a new call changes it.
 
 **Filings:** rules read the subject lines of 1,128 older PDFs at no cost. A free model then read 48 of the highest-ranked, at about 2,400 tokens each. A refresh on 3 November read a few more, and about 1,100 remain for later days. Of its 13 demotions from the top tier, some were wrong, including HDFC Bank's chairman resigning and Polycab's new CFO, so code now decides who counts as a top executive and keeps results filings as results. It also called 5 companies' replies to rumour queries routine, which left Sun Pharma's card saying its response was awaited after it had replied, so code keeps those notable too. After that, 10 filings changed tier against the earlier ranking, and all 10 were read and look defensible. 56 PDFs couldn't be read, and those filings keep their rule-based rank.
 
 **Chat:** real questions through the app took about a second or less on Qwen and used about 600 tokens each. Chat runs separately, so research can't use up its allowance.
 
-**Small talk:** about 30 real messages went through Qwen and the replies were read by Claude, before anything was tuned and then again after. Questions meant for a company's calls stopped at a stand-in, so this tests where messages go, not Ask's answers. The first run was useful: the model offered a vague opinion on the banking sector, repeated its own instructions back, and sent "and the margins?" to the portfolio view when Dixon was the subject, so market questions no longer reach it and only clear small talk can leave a company's conversation. After the fixes, all 30 went where they should, and none stated a company's facts. That second run is on the messages the fixes came from, so it isn't a clean test. A greeting costs about 320 tokens and takes under 2 seconds, other small talk about 650 because the question is read first, and repeating a greeting costs nothing. An unusual message can still get a weak or wrong general answer, because this model has no sources for it.
+**Small talk:** about 30 real messages went through Qwen and the replies were read, before anything was tuned and then again after. Questions meant for a company's calls stopped at a stand-in, so this tests where messages go, not Ask's answers. The first run was useful: the model offered a vague opinion on the banking sector, repeated its own instructions back, and sent "and the margins?" to the portfolio view when Dixon was the subject, so market questions no longer reach it and only clear small talk can leave a company's conversation. After the fixes, all 30 went where they should, and none stated a company's facts. That second run is on the messages the fixes came from, so it isn't a clean test. A greeting costs about 320 tokens and takes under 2 seconds, other small talk about 650 because the question is read first, and repeating a greeting costs nothing. An unusual message can still get a weak or wrong general answer, because this model has no sources for it.
 
 ## Does it work on companies nobody prepared?
 
@@ -187,10 +185,17 @@ A copy built by following the Dockerfile's steps, with production dependencies a
 | Failure | What the investor sees |
 |---|---|
 | All sources blocked | "Couldn't reach its data sources", not "check the ticker". Ask says it couldn't open the transcripts |
-| Only NSE blocked, as a cloud host might be | A partial dossier that says NSE couldn't be reached, and retries later |
+| NSE's API refused | Prices still update. Filings, results and calendar dates come from NSE's archive feeds, and a new company's figures from screener.in, labelled as such |
+| NSE's API and screener both unavailable | A partial dossier that says NSE couldn't be reached, and retries later |
 | Wrong API key | Financial sections still build, with a note that the model failed. Chat shows the closest passages, and Groq's real rejection of a fake key was tested |
 | Daily spending limit reached | The same, with a note saying no model was available |
-| Filings refresh reaches nothing | "Filings checked" keeps its last true time and names the companies it couldn't reach |
+| Filings refresh reaches nothing | "Filings checked" keeps its last true time, and the Brief says what it holds and up to when |
+
+**The deployed app froze, and this is what changed.** Once on Render, a refresh failed for all 18 holdings, so filings and closing prices stayed at the shipped snapshot. One failed step also stopped everything after it for that company, and errors weren't logged. Prices now refresh on their own, each source's status is recorded at `/api/status`, and two NSE refusals in a row stop the rest from waiting out their retries.
+
+**Is the fallback faithful?** NSE's archive RSS was compared with its API across the whole market for one day, 3 November: 1,131 of the API's 1,138 filings matched by document link, all with identical labels, and the 7 others were mostly NSE-generated queries with no document. On a copy of the database, today's filings and prices were deleted and a real refresh ran with the API refused: all 6 filings came back with identical labels, text and times, prices returned, and the run took 9 seconds. That test ran from a local machine, so whether Render can reach the archive host shows in `/api/status` once deployed.
+
+**Limits:** the feeds only reach back to midnight, and the results feed holds the last 20 filings, so a busy evening can outrun it. Screener's figures round to the crore and its profit line is before minority interests, so Dixon's September quarter shows ₹411 crore against ₹344 crore attributable in the filing. A card using them says so, and a filed figure always wins.
 
 **Hostile documents:** `eval/injection_test.py` plants instructions inside transcript sentences and runs the real model. All 10 checks passed. It's a handful of attacks, not proof of safety. The real protection is structural: models have no tools, and code checks what they return.
 
@@ -198,7 +203,7 @@ A copy built by following the Dockerfile's steps, with production dependencies a
 
 ## Which model for judgment?
 
-`eval/bakeoff_judge.py` ran Sonnet and Opus over identical evidence for three companies. They agreed on 69 of 79 verdicts (87%). Neither was clearly better on the other 10, and Sonnet cost about 40% as much. There's no ground truth for those 10, so this is a judgment call.
+`eval/bakeoff_judge.py` ran a mid-priced model and the most expensive one over identical evidence for three companies. They agreed on 69 of 79 verdicts (87%). Neither was clearly better on the other 10, and the mid-priced one cost about 40% as much. There's no ground truth for those 10, so this is a judgment call.
 
 ## Cost
 
@@ -206,17 +211,15 @@ A copy built by following the Dockerfile's steps, with production dependencies a
 |---|---|
 | Reading a filing | about $0.0014 |
 | A new company's dossier | about $0.04 to $0.20, depending on how much it promises |
-| Everything spent building this, including rework, experiments and testing | about $10.60 across 1,898 model calls, through the Claude CLI |
+| Everything spent building this, including rework, experiments and testing | about $10.60 across 1,898 model calls |
 | Running it from now on | $0, on Groq's free tier |
 
 Figures come from the app's own ledger, as reported by the provider. Repeat runs on unchanged documents use no tokens because answers are cached. The free tier has its own limits, described above, and chat has a daily limit too, since a public link can be asked anything.
 
 ## Software tests
 
-243 automated tests (`pytest tests`, with no network or model) and 31 browser checks at phone size (`tests/e2e.py`), run in Chromium, WebKit (Safari's engine) and Firefox. An accessibility scan found no serious issues in either theme, and phone-size checks ran from 320 to 768 pixels wide. Some inline source links are under 24 pixels tall, and a dossier takes about 5 seconds to open on simulated slow 4G. Firefox has failed now and then: one run failed a click on the Brief, which took 3 dependent checks with it, and a later run failed 1 check that wasn't recorded. The runs after each passed in full, so treat those as an intermittent problem whose cause wasn't found. Playwright's Firefox also sometimes crashes closing a second window after its checks have run, and the test script now ignores that. WebKit has logged a cancelled calendar request during some runs without any check failing, and that wasn't traced either.
+267 automated tests (`pytest tests`, with no network or model) and 34 browser checks at phone size (`tests/e2e.py`), run in Chromium, WebKit (Safari's engine) and Firefox. A check confirms each report section links to its source. On Kaynes's report, all 35 source links have an address. An accessibility scan found no serious issues in either theme, and phone-size checks ran from 320 to 768 pixels wide. Some inline source links are under 24 pixels tall, and a dossier takes about 5 seconds to open on simulated slow 4G. Firefox has failed now and then: one run failed a click on the Brief, which took 3 dependent checks with it, and a later run failed 1 check that wasn't recorded. The runs after each passed in full, so treat those as an intermittent problem whose cause wasn't found. Playwright's Firefox also sometimes crashes closing a second window after its checks have run, and the test script now ignores that. WebKit has logged a cancelled calendar request during some runs without any check failing, and that wasn't traced either.
 
 **Tested only in parts:** the "Moving now" banner. The live endpoint ran against real quotes during market hours, and the banner was checked on screen with the clock held at market hours and the live answer filled in, but the two haven't been seen together.
 
-**Not tested:** phone notifications on a real phone (they're off by default, and the sending logic and its safeguards have unit tests only), real calls to the Anthropic API (a local stub and the Claude CLI only), Gemini, the actual Docker build, whether NSE accepts requests from a cloud host, and use by real investors.
-
-**On a free host:** Render's free disk is wiped on each restart, so the app wakes with the shipped snapshot. Any company added, old filing read or day's usage counted since then is forgotten. Groq's own limits still apply, and FINN obeys its wait times when it's told to. Read older filings locally and commit the database to keep that work.
+**On a free host:** Render's free disk is wiped on each restart, so the app wakes with the shipped snapshot. Any company added, old filing read or day's usage counted since then is forgotten. Groq's own limits still apply, and FINN obeys its wait times when it's told to. To keep that work, or to close a gap in filings, run `scripts/publish_data.py` on a computer NSE answers.

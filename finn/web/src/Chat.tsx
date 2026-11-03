@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CompareTable } from "./Compare";
-import { DEFAULT_SETTINGS, ago, api, load, marketMoment, mine, myHoldings, save, signed, type Settings } from "./lib";
+import { DEFAULT_SETTINGS, ago, api, load, marketMoment, mine, myHoldings, save, signed, yahooUrl, type Settings } from "./lib";
 import { SourceLink } from "./ui";
 
-interface Item { symbol: string | null; title: string; detail: string | null; url: string | null; when: string | null }
-interface Reply { about?: string | null; text: string; items?: Item[]; suggest?: string[]; table?: any; quotes?: { text: string; speaker: string; page: number; url: string; call_label: string }[] }
+interface Item { symbol: string | null; title: string; detail: string | null; url: string | null; when: string | null; source?: string }
+interface Reply { about?: string | null; text: string; items?: Item[]; suggest?: string[]; table?: any; unsourced?: boolean; quotes?: { text: string; speaker: string; page: number; url: string; call_label: string }[] }
 interface Message extends Reply { from: "you" | "finn"; at: string }
 export interface Alert { kind: "filing" | "move"; ts: string; symbol: string; title: string; text: string; url: string | null; label: string; tone?: string; move?: number }
 
@@ -36,10 +36,10 @@ export function MovingNow({ settings, open }: { settings: Settings; open: (s: st
       {moving.slice(0, 6).map((m) => (
         <div key={m.symbol} className="mover">
           <button className="ticker" onClick={() => open(m.symbol)}>{m.symbol}</button>
-          <span className="num mover-figs">
+          <a className="num mover-figs figs-link" href={yahooUrl(m.symbol)} target="_blank" rel="noopener noreferrer" aria-label={`${m.symbol} on Yahoo Finance`}>
             <span className={m.move_pct >= 0 ? "up" : "down"}>{signed(m.move_pct)}</span>
-            {m.vol_x !== null && <span> · {m.vol_x.toFixed(1)}× vol so far</span>}
-          </span>
+            {m.vol_x !== null && <span> · {m.vol_x.toFixed(1)}× vol so far</span>} ↗
+          </a>
         </div>
       ))}
     </section>
@@ -55,7 +55,7 @@ function AlertBubble({ a, open }: { a: Alert; open: (s: string) => void }) {
         <span className="when num">{ago(a.ts)}</span>
       </header>
       <p className={`bubble-title ${a.kind === "move" ? `num ${(a.move ?? 0) >= 0 ? "up" : "down"}` : ""}`}>{a.title}</p>
-      <p className="meta">{a.text}{a.url ? " " : ""}{a.url && <SourceLink url={a.url}>Filing</SourceLink>}</p>
+      <p className="meta">{a.text} <SourceLink url={a.url ?? yahooUrl(a.symbol)}>{a.url ? "Source filing" : "Prices: Yahoo Finance"}</SourceLink></p>
     </article>
   );
 }
@@ -64,6 +64,7 @@ function Answer({ m, open, send }: { m: Message; open: (s: string) => void; send
   return (
     <div className="bubble bubble-finn">
       <p>{m.text}</p>
+      {m.unsourced && <p className="meta">A general explanation from FINN's chat model, with no filing behind it.</p>}
       {m.table?.columns?.length > 0 && <CompareTable table={m.table} open={open} />}
       {m.items && m.items.length > 0 && (
         <ul className="answer-items">
@@ -74,7 +75,7 @@ function Answer({ m, open, send }: { m: Message; open: (s: string) => void; send
                 ? <button className="link" onClick={() => open(x.symbol!)}>{x.title}</button>
                 : x.url && !x.symbol ? <SourceLink url={x.url}>{x.title}</SourceLink> : <span>{x.title}</span>}
               {x.detail && <span className="meta answer-detail">{x.detail}</span>}
-              {x.symbol && x.url && <SourceLink url={x.url}>Filing</SourceLink>}
+              {x.symbol && x.url && <SourceLink url={x.url}>{x.source ?? "Source filing"}</SourceLink>}
             </li>
           ))}
         </ul>
@@ -110,9 +111,10 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
     }).catch(() => {});
   }, []);
 
+  // With nothing asked yet, the page stays at the top, or opening it would skip past what it's for.
   useEffect(() => {
-    bottom.current?.scrollIntoView?.({ block: "end" });
-  }, [messages.length, busy, alerts.length]);
+    if (messages.length || busy) bottom.current?.scrollIntoView?.({ block: "end" });
+  }, [messages.length, busy]);
 
   const send = async (raw: string) => {
     const message = raw.trim();
@@ -144,7 +146,7 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
     save("finn.chat.about", symbol);
   };
 
-  const shown = showAll ? alerts : alerts.slice(0, 6);
+  const shown = showAll ? alerts : alerts.slice(0, 3);
   const submit = (e: FormEvent) => {
     e.preventDefault();
     send(text);
@@ -154,13 +156,13 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
     <div className="chat">
       <header className="mast">
         <h1 className="lede">Ask FINN.</h1>
-        <p className="moment">Alerts land here. Anything about a company comes only from filings, filed results, prices and earnings calls, and FINN says when it doesn't know.</p>
+        <p className="moment">Anything about a company comes from its filings, results, prices and earnings calls, with the source linked. FINN says when it doesn't know.</p>
       </header>
 
       <MovingNow settings={settings} open={open} />
 
       <section aria-label="Alerts">
-        <h2 className="eyebrow">Alerts, newest first{alerts.length ? ` · ${alerts.length}` : ""}</h2>
+        <h2 className="eyebrow">Latest alerts{alerts.length ? ` · ${alerts.length} in 14 days` : ""}</h2>
         {alerts.length === 0 && <p className="meta">Nothing has crossed your limits or ranked as important in the last 14 days.</p>}
         {shown.map((a) => <AlertBubble key={`${a.symbol}${a.ts}${a.kind}${a.title}`} a={a} open={open} />)}
         {alerts.length > shown.length && <button className="link widen" onClick={() => setShowAll(true)}>Show {alerts.length - shown.length} earlier alerts</button>}
@@ -169,10 +171,7 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
       <section aria-label="Conversation" className="thread-chat" aria-live="polite">
         <h2 className="eyebrow">Your questions</h2>
         {messages.length === 0 && (
-          <>
-            <p className="meta">Try one of these.</p>
-            <div className="chips chips-wrap">{STARTERS.map((s) => <button key={s} className="chip" onClick={() => send(s)}>{s}</button>)}</div>
-          </>
+          <div className="chips chips-wrap">{STARTERS.map((s) => <button key={s} className="chip" onClick={() => send(s)}>{s}</button>)}</div>
         )}
         {messages.map((m, i) => (m.from === "you"
           ? <p key={i} className="bubble bubble-you">{m.text}</p>

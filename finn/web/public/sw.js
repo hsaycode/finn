@@ -1,5 +1,5 @@
 // Keeps the last brief readable with no signal: network first, cached copy as the fallback.
-const CACHE = "finn-v4";
+const CACHE = "finn-v5";
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => {

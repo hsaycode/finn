@@ -5,12 +5,15 @@ pull side is restricted to primary sources. Only the raw transcripts and annual 
 """
 from __future__ import annotations
 
+import calendar
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from bs4 import BeautifulSoup
 
 from .net import FetchError, fetch
+from .nse import Quarter
 
 BASE = "https://www.screener.in"
 
@@ -136,6 +139,39 @@ def _parse(symbol: str, soup, consolidated: bool) -> Company:
     )
 
 
+def quarters(company: Company, limit: int = 9) -> list[Quarter]:
+    """Screener's quarterly table, newest first, for when NSE can't be reached. Rounder and less exact than
+    filed XBRL, and its lines differ a little (see docs/RESULTS.md), so anything using them says where they came from."""
+    table = company.tables.get("quarters")
+    if not table:
+        return []
+    lender = table.get("Financing Profit") is not None
+
+    def cell(i: int, *names: str) -> float | None:
+        values = table.get(*names) or []
+        return values[i] if i < len(values) else None
+
+    out = []
+    for i, label in enumerate(table.columns):
+        try:
+            month = datetime.strptime(label, "%b %Y")
+        except ValueError:
+            continue
+        end = f"{month.year}-{month.month:02d}-{calendar.monthrange(month.year, month.month)[1]}"
+        q = Quarter(
+            symbol=company.symbol, period_end=end, basis="consolidated" if company.consolidated else "standalone", format="banking" if lender else "indas",
+            revenue=cell(i, "Sales", "Revenue"), other_income=cell(i, "Other Income"), finance_costs=cell(i, "Interest"), depreciation=cell(i, "Depreciation"),
+            pbt=cell(i, "Profit before tax"), pat=cell(i, "Net Profit"), pat_total=cell(i, "Net Profit"), source_url=company.source_url, provider="screener",
+        )
+        if lender:
+            q.nii = round(q.revenue - q.finance_costs, 2) if q.revenue is not None and q.finance_costs is not None else None
+            q.gross_npa_pct, q.net_npa_pct = cell(i, "Gross NPA %"), cell(i, "Net NPA %")
+        else:
+            q.ebitda = cell(i, "Operating Profit")
+        out.append(q)
+    return list(reversed(out))[:limit]
+
+
 def peers(company: Company, ttl: float = 86400, limit: int = 6) -> dict | None:
     """Screener's peer table: same industry, same period, its standardised figures."""
     if not company.warehouse_id:
@@ -167,4 +203,4 @@ def peers(company: Company, ttl: float = 86400, limit: int = 6) -> dict | None:
     return {"rows": (own + [r for r in rows if not r["self"]])[:limit], "source": company.source_url}
 
 
-__all__ = ["Company", "Table", "company", "peers", "FetchError"]
+__all__ = ["Company", "Table", "company", "peers", "quarters", "FetchError"]

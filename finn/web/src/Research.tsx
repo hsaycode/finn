@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CompareSection } from "./Compare";
-import { METRIC_NAMES, VERDICT, api, cr, fromSource, load, marketMoment, save, signed, type Metric, type Pin, type Promise_, type Verdict } from "./lib";
-import { Bars, Collapse, PriceChart, SourceLink, VerdictTag } from "./ui";
+import { METRIC_NAMES, VERDICT, api, cr, fromSource, load, marketMoment, save, signed, yahooUrl, type Metric, type Pin, type Promise_, type Verdict } from "./lib";
+import { Bars, Cited, Collapse, PriceChart, SourceLink, VerdictTag } from "./ui";
 
 /* The dossier is a large, source-shaped document and each section tolerates missing pieces. */
 type Dossier = any;
@@ -104,7 +104,7 @@ function PriceBlock({ symbol }: { symbol: string }) {
         ₹{q.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
         {q.change_pct != null && <span className={`price-change ${q.change_pct >= 0 ? "up" : "down"}`}>{signed(q.change_pct, 2)}</span>}
       </p>
-      <p className="meta num">{q.as_of}{q.live ? " · Yahoo Finance, can be delayed" : " · last stored close"}</p>
+      <p className="meta num">{q.as_of}{q.live ? " · can be delayed" : " · last stored close"} · <SourceLink url={yahooUrl(symbol)}>Yahoo Finance</SourceLink></p>
       {q.low_52w != null && q.high_52w != null && <p className="meta num">52-week range ₹{q.low_52w.toLocaleString("en-IN")} to ₹{q.high_52w.toLocaleString("en-IN")}</p>}
       <PriceChart points={range === "1d" ? today : points} label={`${symbol} share price`} base={range === "1d" ? q.previous_close : undefined} />
       <div className="chips chips-tight" role="group" aria-label="Chart range">
@@ -284,7 +284,7 @@ function TrackRecord({ d }: { d: Dossier }) {
   );
 }
 
-function Arguments({ a }: { a: Dossier["arguments"] }) {
+function Arguments({ a, tables }: { a: Dossier["arguments"]; tables?: string }) {
   if (!a) return null;
   const side = (title: string, items: any[], cls: string) => (
     <div className={`side ${cls}`}>
@@ -296,7 +296,7 @@ function Arguments({ a }: { a: Dossier["arguments"] }) {
             <span className="cites">
               {x.sources
                 .filter((s: any, j: number, all: any[]) => all.findIndex((o) => o.source === s.source) === j)
-                .map((s: any) => <SourceLink key={s.source} url={s.url}>{s.source}</SourceLink>)}
+                .map((s: any) => <SourceLink key={s.source} url={s.url ?? tables}>{s.source}</SourceLink>)}
             </span>
           </li>
         ))}
@@ -324,7 +324,7 @@ function Numbers({ d }: { d: Dossier }) {
       <h2>The numbers</h2>
       {q && (
         <>
-          <p className="meta">{q.label} · {q.basis} · filed XBRL</p>
+          <p className="meta">{q.label} · {q.basis} · <SourceLink url={q.source}>{q.source_label ?? "Filed results (XBRL)"}</SourceLink></p>
           <div className="metrics">
             {Object.entries<Metric>(q.metrics).map(([k, m]) => (
               <div key={k} className="metric">
@@ -347,6 +347,7 @@ function Numbers({ d }: { d: Dossier }) {
           <div key={k}><dt>{k}</dt><dd className="num">{ratios[k].replace("Cr.", "cr")}</dd></div>
         ))}
       </dl>
+      <Cited label="Ratios" items={[{ label: "screener.in", url: d.sources?.screener }]} />
 
       <Kpis items={d.kpis} />
 
@@ -364,13 +365,14 @@ function Numbers({ d }: { d: Dossier }) {
             ))}
             {tr.margin_change_3y != null && <li><b>Margin</b> <span className="num">{tr.margin_now}%, {tr.margin_change_3y > 0 ? "+" : "−"}{Math.abs(tr.margin_change_3y)} pts</span> over 3 years</li>}
           </ul>
+          <Cited label="Annual figures" items={[{ label: "screener.in", url: d.sources?.screener }]} />
         </div>
       )}
     </section>
   );
 }
 
-function Balance({ b }: { b: Dossier["balance_sheet"] }) {
+function Balance({ b, tables }: { b: Dossier["balance_sheet"]; tables?: string }) {
   if (!b) return null;
   return (
     <section className="sec" id="balance">
@@ -390,11 +392,12 @@ function Balance({ b }: { b: Dossier["balance_sheet"] }) {
       {b.days && b.days.ccc?.some((x: any) => x !== null) && (
         <Bars title="Cash conversion cycle, days" labels={b.days.columns} values={b.days.ccc} format={(v) => `${v} days`} />
       )}
+      <Cited items={[{ label: "screener.in's balance sheet", url: tables }]} />
     </section>
   );
 }
 
-function Cash({ c }: { c: Dossier["cash"] }) {
+function Cash({ c, tables }: { c: Dossier["cash"]; tables?: string }) {
   if (!c) return null;
   return (
     <section className="sec" id="cash">
@@ -416,11 +419,12 @@ function Cash({ c }: { c: Dossier["cash"] }) {
           <Bars title="Free cash flow, ₹ crore" labels={c.columns} values={c.fcf} format={cr} tone="bad-negative" />
         </>
       )}
+      <Cited items={[{ label: c.banking ? "screener.in's quarterly table" : "screener.in's cash flow", url: tables }]} />
     </section>
   );
 }
 
-function Business({ b }: { b: Dossier["business"] }) {
+function Business({ b, results }: { b: Dossier["business"]; results?: string }) {
   if (!b) return null;
   return (
     <section className="sec" id="business">
@@ -441,6 +445,27 @@ function Business({ b }: { b: Dossier["business"] }) {
           ))}
         </ul>
       )}
+      {b.segments?.length > 0 && <Cited label="Revenue mix" items={[{ label: "Filed results (XBRL)", url: results }]} />}
+    </section>
+  );
+}
+
+/** Every document behind this page in one place, for anyone who wants to read the originals. */
+function AllSources({ d }: { d: Dossier }) {
+  const q = d.snapshot?.quarter;
+  const calls: any[] = d.promises?.calls ?? [];
+  const reports: any[] = d.sources?.annual_reports ?? [];
+  return (
+    <section className="sec" id="sources">
+      <h2>Every source</h2>
+      <p className="meta">The documents this page was built from. Each statement above links to the one it came from.</p>
+      <ul className="source-list">
+        {q?.source && <li><span>Latest results, {q.label}</span><SourceLink url={q.source}>{q.source_label ?? "Filed XBRL"}</SourceLink></li>}
+        {calls.map((c) => <li key={c.url}><span>{fromSource(c.label)}</span><SourceLink url={c.url}>Open PDF</SourceLink></li>)}
+        {reports.map((r) => <li key={r.url}><span>Annual report {r.year}</span><SourceLink url={r.url}>Open PDF</SourceLink></li>)}
+        {d.sources?.screener && <li><span>Multi-year tables, ratios and peers</span><SourceLink url={d.sources.screener}>screener.in</SourceLink></li>}
+        <li><span>Share price</span><SourceLink url={yahooUrl(d.symbol)}>Yahoo Finance</SourceLink></li>
+      </ul>
     </section>
   );
 }
@@ -507,16 +532,21 @@ function Ask({ symbol }: { symbol: string }) {
 function DossierView({ d, onBack, open, working }: { d: Dossier; onBack: () => void; open: (s: string) => void; working?: string }) {
   const candidates: [string, string, boolean][] = [
     ["record", "Track record", true], ["case", "Bull / bear", !!d.arguments], ["numbers", "Numbers", true], ["peers", "Peers", !!d.peers?.rows?.length], ["balance", "Balance sheet", !!d.balance_sheet],
-    ["cash", "Cash", !!d.cash], ["forces", "Forces", !!d.forces?.forces], ["business", "Business", !!d.business], ["ask", "Ask", true],
+    ["cash", "Cash", !!d.cash], ["forces", "Forces", !!d.forces?.forces], ["business", "Business", !!d.business], ["ask", "Ask", true], ["sources", "Sources", true],
   ];
   const sections = candidates.filter((c) => c[2]);
+  const tables = d.sources?.screener;
+  const pr = d.promises;
   return (
     <>
       <header className="dossier-head">
         <button className="link back" onClick={onBack}>← Research</button>
         <h1 className="dossier-name">{d.name}</h1>
         <p className="meta">{d.symbol}{d.business?.industry ? ` · ${d.business.industry}` : ""}{d.consolidated ? " · consolidated" : " · standalone"}</p>
-        {!working && !d.numbers_first && <a className="link summary-link" href={`/summary/${d.symbol}`}>One-page summary</a>}
+        <div className="dossier-actions">
+          {pr?.testable > 0 && <a className="stat" href="#record">Kept <b className="num">{pr.tally.delivered}</b> of <b className="num">{pr.testable}</b> promises</a>}
+          {!working && !d.numbers_first && <a className="link summary-link" href={`/summary/${d.symbol}`}>One-page summary</a>}
+        </div>
       </header>
       {working && (
         <div className="reading" role="status">
@@ -545,18 +575,41 @@ function DossierView({ d, onBack, open, working }: { d: Dossier; onBack: () => v
           ))}
         </section>
       )}
-      <Arguments a={d.arguments} />
+      <Arguments a={d.arguments} tables={tables} />
       <Numbers d={d} />
       <Peers p={d.peers} open={open} />
-      <Balance b={d.balance_sheet} />
-      <Cash c={d.cash} />
+      <Balance b={d.balance_sheet} tables={tables} />
+      <Cash c={d.cash} tables={tables} />
       <Forces f={d.forces} />
       <Notes f={d.ar_flags} />
-      <Business b={d.business} />
+      <Business b={d.business} results={d.snapshot?.quarter?.source} />
       <Ask symbol={d.symbol} />
+      <AllSources d={d} />
       <p className="asof">
-        Built from filed results, {d.promises?.source === "annual_reports" ? "annual reports" : `${d.promises?.calls?.length ?? 0} earnings-call transcripts and the annual report`}. Peers come from screener.in. No news, broker notes or outside knowledge.
+        The track record comes from filed results and {d.promises?.source === "annual_reports" ? "annual reports" : `${d.promises?.calls?.length ?? 0} earnings-call transcripts`}. Multi-year tables, ratios and peers come from screener.in. No news, broker notes or outside knowledge.
       </p>
+    </>
+  );
+}
+
+interface Ready { symbol: string; name: string | null; held: boolean; kept: number | null; checked: number; open: number }
+
+function CompanyList({ title, items, open }: { title: string; items: Ready[]; open: (s: string) => void }) {
+  if (!items.length) return null;
+  return (
+    <>
+      <h2 className="eyebrow">{title}</h2>
+      <ul className="co-list">
+        {items.map((c) => (
+          <li key={c.symbol}>
+            <button className="co-row" onClick={() => open(c.symbol)}>
+              <span className="co-name">{(c.name ?? c.symbol).replace(/\s+(Ltd|Limited)\.?$/i, "")}</span>
+              <span className="co-ticker num">{c.symbol}</span>
+              <span className="co-record">{c.checked > 0 ? <>Kept <b className="num">{c.kept}</b> of <b className="num">{c.checked}</b></> : c.open > 0 ? `${c.open} ${c.open === 1 ? "promise" : "promises"} open` : "No checked promises yet"}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </>
   );
 }
@@ -564,11 +617,11 @@ function DossierView({ d, onBack, open, working }: { d: Dossier; onBack: () => v
 export function ResearchScreen({ symbol, open }: { symbol: string | null; open: (s: string | null) => void }) {
   const [q, setQ] = useState("");
   const [state, setState] = useState<{ status: string; step?: string; error?: string; dossier?: Dossier; working?: string } | null>(null);
-  const [ready, setReady] = useState<string[]>([]);
+  const [ready, setReady] = useState<Ready[]>([]);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    api<{ dossiers: string[] }>("/api/status").then((s) => setReady(s.dossiers)).catch(() => {});
+    api<{ companies: Ready[] }>("/api/companies").then((s) => setReady(s.companies)).catch(() => {});
   }, [symbol]);
 
   useEffect(() => {
@@ -639,11 +692,9 @@ export function ResearchScreen({ symbol, open }: { symbol: string | null; open: 
       </form>
       {ready.length > 0 && (
         <>
-          <h2 className="eyebrow">Ready now</h2>
-          <div className="chips chips-wrap">
-            {ready.map((s) => <button key={s} className="chip" onClick={() => open(s)}>{s}</button>)}
-          </div>
-          <CompareSection ready={ready} open={(s) => open(s)} />
+          <CompareSection ready={ready.map((c) => c.symbol)} open={(s) => open(s)} />
+          <CompanyList title="Your default holdings" items={ready.filter((c) => c.held)} open={(s) => open(s)} />
+          <CompanyList title="Also researched" items={ready.filter((c) => !c.held)} open={(s) => open(s)} />
         </>
       )}
     </>

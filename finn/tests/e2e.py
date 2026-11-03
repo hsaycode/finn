@@ -185,6 +185,7 @@ with sync_playwright() as p:
     def compare_companies():
         pg.goto(f"{BASE}/research", wait_until="networkidle")
         box = pg.locator("#compare")
+        box.get_by_role("button", name="Compare companies").click()
         box.get_by_role("button", name="DIXON", exact=True).click()
         box.get_by_role("button", name="KAYNES", exact=True).click()
         expect(box.locator(".compare table")).to_be_visible(timeout=10000)
@@ -342,6 +343,34 @@ with sync_playwright() as p:
         expect(pg.get_by_role("button", name="Print or save as PDF")).to_be_hidden()
         pg.emulate_media(media="screen")
 
+    def every_claim_has_a_source():
+        pg.goto(f"{BASE}/research/{symbol}", wait_until="networkidle")
+        https = __import__("re").compile("^https://")
+        for section, words in (("#numbers", "Filed results"), ("#balance", "screener.in"), ("#cash", "screener.in"), ("#sources", "Yahoo Finance")):
+            link = pg.locator(section).get_by_role("link", name=words).first
+            expect(link).to_have_attribute("href", https)
+        expect(pg.locator(".priceblock").get_by_role("link", name="Yahoo Finance")).to_have_attribute("href", https)
+        unlinked = pg.locator("#case .cites span.src")
+        expect(unlinked).to_have_count(0)
+
+    def first_visit_explains_itself():
+        other = b.new_context(viewport={"width": 390, "height": 844}, service_workers="block")
+        first = other.new_page()
+        first.goto(BASE, wait_until="networkidle")
+        expect(first.get_by_text("Everything it tells you links to its source.")).to_be_visible()
+        first.get_by_role("button", name="Got it").click()
+        expect(first.locator(".intro")).to_have_count(0)
+        first.reload(wait_until="networkidle")
+        expect(first.locator(".intro")).to_have_count(0)
+        close_window(other)
+
+    def research_names_the_companies():
+        pg.goto(f"{BASE}/research", wait_until="networkidle")
+        expect(pg.locator(".co-row").first).to_be_visible()
+        expect(pg.get_by_role("button", name="Dixon Technologies")).to_be_visible()
+        pg.get_by_role("button", name="Dixon Technologies").click()
+        expect(pg.locator("#record")).to_be_visible(timeout=15000)
+
     def tab_routes():
         pg.goto(BASE, wait_until="networkidle")
         expect(pg.locator(".tabs button")).to_have_count(4)
@@ -378,6 +407,9 @@ with sync_playwright() as p:
     step("The brief shows what's coming up", coming_up)
     step("Press releases get their own shelf", company_news_shelf)
     step("A one-page summary prints cleanly", one_page_summary)
+    step("Every section of a report links to its source", every_claim_has_a_source)
+    step("A first visit explains itself, once", first_visit_explains_itself)
+    step("Research lists companies by name, with their record", research_names_the_companies)
     step("Four tabs route correctly", tab_routes)
     b.close()
 

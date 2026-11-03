@@ -17,8 +17,9 @@ COPY finn/ finn/
 COPY data/finn.db data/finn.db
 COPY --from=web /web/dist web/dist
 # One malloc arena per core keeps threads from holding on to freed PDF memory on a 512 MB host.
-ENV PORT=8000 FINN_REFRESH_MINUTES=30 MALLOC_ARENA_MAX=2
-# Spaces and similar hosts run the container as a non-root user.
+# Filing times are IST, so "the last 24 hours" needs the server's clock on IST too. This form needs no time zone files.
+ENV PORT=8000 FINN_REFRESH_MINUTES=30 MALLOC_ARENA_MAX=2 TZ=IST-5:30
+# Some hosts run the container as a non-root user.
 RUN mkdir -p data/cache && chmod -R a+rwX data
 EXPOSE 8000
 CMD ["sh", "-c", "uv run --frozen --no-dev --no-sync --extra push uvicorn finn.api:app --host 0.0.0.0 --port ${PORT}"]

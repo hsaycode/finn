@@ -251,7 +251,10 @@ def compare(symbols: list[str]) -> dict:
             best = values.index(max(numeric) if better > 0 else min(numeric))
         rows.append({"group": group, "name": name, "values": values, "unit": unit, "best": best})
     return {
-        "columns": [{"symbol": s, "name": dossiers[s]["name"], "format": ((dossiers[s].get("snapshot") or {}).get("quarter") or {}).get("format"), "quarter": ((dossiers[s].get("snapshot") or {}).get("quarter") or {}).get("label")} for s in ready],
+        "columns": [{
+            "symbol": s, "name": dossiers[s]["name"], "format": ((dossiers[s].get("snapshot") or {}).get("quarter") or {}).get("format"), "quarter": ((dossiers[s].get("snapshot") or {}).get("quarter") or {}).get("label"),
+            "results_url": ((dossiers[s].get("snapshot") or {}).get("quarter") or {}).get("source"), "tables_url": (dossiers[s].get("sources") or {}).get("screener"),
+        } for s in ready],
         "rows": rows, "missing": [s for s in symbols if not dossiers[s]],
     }
 
@@ -322,7 +325,7 @@ def financial_snapshot(c: screener.Company, quarters: list[nse.Quarter]) -> dict
             "format": latest.format, "sector_stats": _sector_stats(latest),
             "built": "Pre-provision profit is calculated from filed lines, because NBFCs don't file it." if latest.format == "nbfc" else None,
             "label": T.quarter_label(latest.period_end), "period_end": latest.period_end, "basis": latest.basis,
-            "audited": latest.audited, "source": latest.source_url,
+            "audited": latest.audited, "source": latest.source_url, "source_label": "screener.in's table" if latest.provider == "screener" else "Filed results (XBRL)",
             "metrics": {k: compare(latest, k) for k in keys},
             "exceptional": latest.exceptional if latest.exceptional else None,
             "margin": round(latest.ebitda / latest.revenue * 100, 1) if latest.ebitda and latest.revenue else None,
@@ -750,8 +753,8 @@ def bull_bear(facts: list[dict], terms: list[str]) -> dict | None:
     return {"bull": resolve(r.get("bull")), "bear": resolve(r.get("bear")), "swing": swing}
 
 
-def collect_facts(snapshot, traj, sheet, cash, pr) -> list[dict]:
-    """Plain statements computed from filed data, for the final argument to rest on."""
+def collect_facts(snapshot, traj, sheet, cash, pr, tables_url: str | None = None) -> list[dict]:
+    """Plain statements computed from filed data, for the final argument to rest on. tables_url is the page holding the multi-year tables."""
     facts = []
     q = snapshot.get("quarter")
     if q:
@@ -772,21 +775,21 @@ def collect_facts(snapshot, traj, sheet, cash, pr) -> list[dict]:
     if traj:
         for sig in traj["signals"]:
             if sig["c3"] is not None:
-                facts.append({"text": f"{sig['label']} 3-year CAGR {sig['c3']}%" + (f", 5-year {sig['c5']}%" if sig["c5"] is not None else ""), "source": "Annual results"})
+                facts.append({"text": f"{sig['label']} 3-year CAGR {sig['c3']}%" + (f", 5-year {sig['c5']}%" if sig["c5"] is not None else ""), "source": "Annual results", "url": tables_url})
         if traj["margin_change_3y"] is not None:
-            facts.append({"text": f"Operating margin {traj['margin_now']}%, {traj['margin_change_3y']:+.1f} points over 3 years", "source": "Annual results"})
+            facts.append({"text": f"Operating margin {traj['margin_now']}%, {traj['margin_change_3y']:+.1f} points over 3 years", "source": "Annual results", "url": tables_url})
     if sheet:
         if sheet["de"] and sheet["de"][-1] is not None and not sheet["banking"]:
             was = f" (was {sheet['de'][0]} in {sheet['columns'][0]})" if sheet["de"][0] is not None else ""
-            facts.append({"text": f"Debt-to-equity {sheet['de'][-1]}{was}", "source": "Balance sheet"})
+            facts.append({"text": f"Debt-to-equity {sheet['de'][-1]}{was}", "source": "Balance sheet", "url": tables_url})
         if sheet.get("negative_net_worth"):
-            facts.append({"text": "Net worth is negative", "source": "Balance sheet"})
+            facts.append({"text": "Net worth is negative", "source": "Balance sheet", "url": tables_url})
         days = sheet.get("days")
         if days and days["ccc"] and days["ccc"][-1] is not None:
             was = f" (was {days['ccc'][0]:.0f} in {days['columns'][0]})" if days["ccc"][0] is not None else ""
-            facts.append({"text": f"Cash conversion cycle {days['ccc'][-1]:.0f} days{was}", "source": "Ratios"})
+            facts.append({"text": f"Cash conversion cycle {days['ccc'][-1]:.0f} days{was}", "source": "Ratios", "url": tables_url})
     if cash and not cash.get("banking") and cash.get("cfo_to_pat_5y") is not None:
-        facts.append({"text": f"Operating cash flow was {cash['cfo_to_pat_5y']}x net profit over the last five years", "source": "Cash flow"})
+        facts.append({"text": f"Operating cash flow was {cash['cfo_to_pat_5y']}x net profit over the last five years", "source": "Cash flow", "url": tables_url})
     if pr:
         for p in pr["promises"]:
             if p["verdict"] in (P.DELIVERED, P.MISSED, P.PARTLY):
@@ -813,7 +816,8 @@ def build(symbol: str, log=lambda *_: None, full: bool = True, quick: bool = Fal
         quarters = nse.quarters(symbol)
         pipeline.refresh_company(symbol, in_portfolio=False) if not _in_portfolio(symbol) else None
     except FetchError:
-        quarters, nse_down = [], True
+        # Screener's table isn't the filing, but it lets a company get a record while NSE won't answer.
+        quarters, nse_down = pipeline.results_from_screener(symbol, _in_portfolio(symbol), c), True
     except (ValueError, KeyError):
         quarters = []
     banking = bool(quarters) and quarters[0].format in ("banking", "nbfc")
@@ -833,7 +837,7 @@ def build(symbol: str, log=lambda *_: None, full: bool = True, quick: bool = Fal
             "symbol": symbol, "name": c.name, "consolidated": c.consolidated, "generated": datetime.now().isoformat(timespec="seconds"),
             "business": biz, "snapshot": snapshot, "trajectory": traj, "balance_sheet": sheet, "cash": cash,
             "promises": None, "dodged": [], "ar_flags": None, "arguments": None, "missing": [], "kpis": [], "forces": None,
-            "peers": screener.peers(c), "incomplete": nse_down,
+            "peers": screener.peers(c), "incomplete": nse_down and not quarters,
             "sources": {"screener": c.source_url, "transcripts": [], "annual_reports": c.annual_reports[:2]},
         }
 
@@ -863,11 +867,13 @@ def build(symbol: str, log=lambda *_: None, full: bool = True, quick: bool = Fal
             flags = None
 
     log("Writing the bull and bear case")
-    facts = collect_facts(snapshot, traj, sheet, cash, pr)
+    facts = collect_facts(snapshot, traj, sheet, cash, pr, c.source_url)
     arguments = bull_bear(facts, terms)
 
     missing = []
-    if nse_down:
+    if nse_down and quarters:
+        missing.append("NSE couldn't be reached just now, so these results and the scored promises use screener.in's quarterly table, not the filing itself.")
+    elif nse_down:
         missing.append("NSE couldn't be reached just now, so filed results and the promise record are missing. FINN will try again when you next open this company.")
     elif not quarters:
         missing.append("No structured results on NSE, so quarterly figures aren't shown.")
@@ -889,7 +895,7 @@ def build(symbol: str, log=lambda *_: None, full: bool = True, quick: bool = Fal
         "symbol": symbol, "name": c.name, "consolidated": c.consolidated, "generated": datetime.now().isoformat(timespec="seconds"),
         "business": biz, "snapshot": snapshot, "trajectory": traj, "balance_sheet": sheet, "cash": cash,
         "promises": pr, "dodged": dodged, "ar_flags": flags, "arguments": arguments, "missing": missing, "built_by": llm.provider(), "kpis": kpis, "forces": forces, "peers": screener.peers(c),
-        "incomplete": nse_down or bool(pr and pr.get("unread_calls")),
+        "incomplete": (nse_down and not quarters) or bool(pr and pr.get("unread_calls")),
         "sources": {"screener": c.source_url, "transcripts": [x for x in (pr or {}).get("calls", [])], "annual_reports": c.annual_reports[:2]},
     }
 

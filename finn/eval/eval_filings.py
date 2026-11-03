@@ -3,8 +3,7 @@
     python eval/eval_filings.py dev       # tune against this
     python eval/eval_filings.py holdout   # report this; don't tune against it
 
-Labels were assigned by Claude, the AI used to build FINN, reading each filing without seeing its
-score. They're an AI's judgment, not a professional investor's. T=top, N=notable, R=routine.
+Labels were assigned by reading each filing without seeing its score. T=top, N=notable, R=routine.
 """
 import json
 import sys

@@ -12,6 +12,8 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 
 **Chat is a section, not the interface.** An investor often doesn't know what to ask, and open-ended chat is where invented answers live, so the Brief stays the front door. The Chat tab holds alerts and answers questions, but code writes the answers from FINN's records. A model can only work out where to look, or summarise transcript sentences that are shown beside it. It refuses buy or sell questions and says when it can't tell.
 
+**It can still say hello.** "Hi" used to get "I can't tell which company you mean", and mid-conversation it went looking for "hi" in Dixon's earnings calls. Now small talk goes to the chat model, which holds no records and is told not to state anything about a company, sector or market. Code doesn't rely on that: a reply with a figure, an index, advice or a company's name isn't shown. A question about markets never reaches it. Greetings need no model to work, and one saved answer serves everyone who says the same thing, so a "hi" rarely spends any allowance.
+
 **Telegram came out.** It would have reached a single configured chat, which an evaluator or a second investor couldn't join. Alerts moved into the app, and the Brief opens with what's new since your last visit. Browser notifications are built but off until keys are set, so by default nothing reaches you while the app is closed.
 
 **Porter's and PESTLE in management's own words.** An independent view of a sector would need outside knowledge, which the primary-sources rule forbids. So FINN files management's sentences under each heading, and a heading it never discussed says so. A quote stays only if its words belong there, which removed 102 of 262 the model had misfiled.
@@ -66,7 +68,7 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 | Reading filing PDFs | Shipped: Claude Haiku 5.5. New: gpt-oss-20b on Groq | Structured extraction |
 | Extracting promises | Shipped: Claude Haiku 5.5. New: gpt-oss-20b on Groq | Input pre-filtered to about 10% of each transcript |
 | Judging promises, reviewing verdicts, bull and bear | Shipped: Claude Sonnet 5.5. New: gpt-oss-120b on Groq | Chosen by comparison, see below |
-| Reading chat questions, summarising transcript sentences | Qwen 3.8 27B on Groq | Fast enough for a conversation. It's a preview model, so a figure missing from its quotes isn't shown, and an outage falls back to the passages |
+| Reading chat questions, summarising transcript sentences, small talk | Qwen 3.8 27B on Groq | Fast enough for a conversation. It's a preview model, so a figure missing from its quotes isn't shown, and an outage falls back to the passages |
 | Live limits, calendar, follow-up questions, one-page summary | None (code) | None of them needs a model, so none of them can run out of allowance |
 
 **Built around the free tier.** The brief says this is comfortably doable on free tiers, so nothing new may need a paid one. Groq's free limits are per model: 8,000 tokens a minute and 1,000 requests a day as its response headers report them, and 30 requests a minute and 200,000 tokens a day in its docs. So:

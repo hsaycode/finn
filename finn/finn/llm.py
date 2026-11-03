@@ -31,7 +31,7 @@ _ANTHROPIC = {CHEAP: os.environ.get("FINN_CHEAP_MODEL", "claude-haiku-5-5"), STR
 _GEMINI = {CHEAP: os.environ.get("FINN_GEMINI_CHEAP", "gemini-2.5-flash-lite"), STRONG: os.environ.get("FINN_GEMINI_STRONG", "gemini-2.5-flash")}
 _CLI = {CHEAP: "haiku", STRONG: os.environ.get("FINN_STRONG_CLI", "sonnet")}
 _GROQ_URL = os.environ.get("FINN_GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
-CHAT_TASKS = {"ask_v1", "chat_route_v1"}
+CHAT_TASKS = {"ask_v1", "chat_route_v1", "chat_talk_v1"}
 # Groq's free limits are per model, so each job gets its own. Chat keeps Qwen to itself, and research
 # can't use it up. A later name in a list is the overflow when the first is out of room.
 GROQ_POOLS = {

@@ -170,6 +170,10 @@ def test_chat_tasks_use_groq_with_the_settings_its_docs_require(groq_stub):
     assert row["provider"] == "groq" and row["cost_usd"] == 0
 
 
+def test_small_talk_counts_as_chat():
+    assert "chat_talk_v1" in llm.CHAT_TASKS
+
+
 def test_research_runs_on_its_own_free_models_so_chat_keeps_qwen(groq_stub):
     assert llm.provider() == "groq" and llm.frugal()
     llm.ask_json("promise_judge_v4", llm.STRONG, "sys", "a verdict")

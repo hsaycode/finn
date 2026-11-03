@@ -578,3 +578,128 @@ def test_a_new_company_shows_numbers_while_its_record_is_read(monkeypatch):
     api._run_research("AAA")
     assert seen == [(True, None), (False, "groq")]
     assert not research.load("AAA").get("numbers_first")
+
+
+def _dixon():
+    db().execute("INSERT OR REPLACE INTO companies (symbol,name,in_portfolio) VALUES ('DIXON','Dixon Technologies (India) Ltd',1)")
+    db().commit()
+
+
+def _model(monkeypatch, **replies):
+    """Stands in for the model, by task. What it was sent is kept to check."""
+    from finn import llm
+
+    sent = []
+
+    def fake(task, tier, system, prompt, **kw):
+        sent.append((task, prompt))
+        if task not in replies:
+            raise llm.NoModel(task)
+        return replies[task]
+
+    monkeypatch.setattr(llm, "ask_json", fake)
+    return sent
+
+
+def _no_transcripts(symbol, question):
+    raise AssertionError(f"{question!r} shouldn't search {symbol}'s calls")
+
+
+@pytest.mark.parametrize("said", ["Hi", "hi!", "hello", "Hello there", "hey finn", "Good morning", "How are you?", "thanks", "Thank you!", "ok", "bye", "who are you", "What can you do?", "help"])
+def test_saying_hi_is_never_treated_as_a_question_about_a_company(said):
+    # No model here, so it needs an answer of its own, and the conversation stays on Dixon.
+    _dixon()
+    r = chat.answer(said, _no_transcripts, about="DIXON")
+    assert r["text"] and "can't tell which company" not in r["text"] and r["about"] == "DIXON"
+
+
+def test_the_chat_model_says_hi_back(monkeypatch):
+    sent = _model(monkeypatch, chat_talk_v1={"reply": "Hi! What can I look up for you?"})
+    r = _say("Hi")
+    assert r["text"] == "Hi! What can I look up for you?" and r["suggest"]
+    assert sent[0][0] == "chat_talk_v1"
+    # A thank-you needs no list of things to try.
+    assert not _say("thanks")["suggest"]
+
+
+@pytest.mark.parametrize("invented", ["Dixon is doing well!", "The Nifty is flat today.", "Revenue was up 12% last quarter.", "It trades at ₹500.", "You should buy some banks."])
+def test_the_chat_model_cant_state_a_fact_or_give_advice(monkeypatch, invented):
+    _dixon()
+    _model(monkeypatch, chat_talk_v1={"reply": invented})
+    assert _say("Hi")["text"] == "I only answer that from FINN's records. Which company do you mean?"
+
+
+def test_a_broken_reply_from_the_chat_model_still_gets_an_answer(monkeypatch):
+    _model(monkeypatch, chat_talk_v1={"nonsense": True})
+    assert _say("Hi")["text"].startswith("Hi, I'm FINN")
+
+
+def test_what_a_term_means_differs_from_what_the_company_reported(monkeypatch):
+    _dixon()
+    _model(monkeypatch, chat_talk_v1={"reply": "Profit before interest, tax, depreciation and amortisation."})
+    assert chat.answer("What is EBITDA?", _no_transcripts, about="DIXON")["text"].startswith("Profit before interest")
+    assert "results" in chat.answer("What's the EBITDA?", _no_transcripts, about="DIXON")["text"]
+
+
+def test_a_followup_that_isnt_about_the_company_goes_to_the_chat_model(monkeypatch):
+    _dixon()
+    research.save("DIXON", {"symbol": "DIXON", "name": "Dixon", "generated": "2026-01-01"})
+    sent = _model(monkeypatch, chat_route_v1={"intent": "chat", "companies": []}, chat_talk_v1={"reply": "Why did the bond cross the road?"})
+    history = [{"from": "you", "text": "Dixon's track record"}, {"from": "finn", "text": "x" * 500}]
+    r = chat.answer("tell me a joke", _no_transcripts, about="DIXON", history=history)
+    assert r["text"] == "Why did the bond cross the road?" and r["about"] == "DIXON"
+    prompt = sent[-1][1]
+    assert "Investor: Dixon's track record" in prompt and "x" * 200 in prompt and "x" * 201 not in prompt
+
+
+def test_a_followup_about_the_company_still_reads_its_calls(monkeypatch):
+    _dixon()
+    research.save("DIXON", {"symbol": "DIXON", "name": "Dixon", "generated": "2026-01-01"})
+    _model(monkeypatch, chat_route_v1={"intent": "transcripts", "companies": []})
+    r = chat.answer("and the margins?", lambda s, q: {"answer": f"{s} on {q}", "quotes": []}, about="DIXON")
+    assert r["text"] == "DIXON on and the margins?"
+
+
+def test_a_followup_tells_the_model_which_kind_of_conversation_it_is(monkeypatch):
+    _dixon()
+    research.save("DIXON", {"symbol": "DIXON", "name": "Dixon", "generated": "2026-01-01"})
+    sent = _model(monkeypatch, chat_route_v1={"intent": "what_matters", "companies": []})
+    r = chat.answer("and the margins?", lambda s, q: {"answer": f"{s} calls", "quotes": []}, about="DIXON")
+    # A misread doesn't leave the company, because only chat can take a follow-up elsewhere.
+    assert r["text"] == "DIXON calls" and "already about one company" in sent[0][1]
+
+
+def test_a_market_question_doesnt_reach_the_chat_model(monkeypatch):
+    sent = _model(monkeypatch, chat_route_v1={"intent": "other", "companies": []}, chat_talk_v1={"reply": "Banks are doing fine."})
+    r = _say("How is the banking sector doing?")
+    assert r["text"] == chat.ON_RECORD and [task for task, _ in sent] == ["chat_route_v1"]
+
+
+@pytest.mark.parametrize("said,name,link", [("INFY results", "INFY", True), ("What about Infosys?", "Infosys", False)])
+def test_a_company_finn_hasnt_read_gets_a_way_forward(monkeypatch, said, name, link):
+    _model(monkeypatch, chat_route_v1={"intent": "results", "companies": [name]})
+    r = _say(said)
+    assert name in r["text"] and "Research" in r["text"] and bool(r["items"]) is link
+
+
+def test_a_name_the_investor_didnt_type_isnt_repeated_back(monkeypatch):
+    _model(monkeypatch, chat_route_v1={"intent": "results", "companies": ["Sensible Corp"]})
+    assert "can't tell which company" in _say("results please")["text"]
+
+
+def test_an_index_isnt_treated_as_a_company(monkeypatch):
+    _model(monkeypatch, chat_route_v1={"intent": "price", "companies": ["Nifty"]})
+    assert "can't tell which company" in _say("Where is the Nifty?")["text"]
+
+
+def test_a_question_the_model_sends_to_the_calls_gets_there(monkeypatch):
+    # The model can spot a misspelt company that plain matching can't. This used to recurse until it crashed.
+    _dixon()
+    research.save("DIXON", {"symbol": "DIXON", "name": "Dixon", "generated": "2026-01-01"})
+    _model(monkeypatch, chat_route_v1={"intent": "transcripts", "companies": ["Dixon"]})
+    r = chat.answer("what did dixn say about margins", lambda s, q: {"answer": f"{s} answered", "quotes": []})
+    assert r["text"] == "DIXON answered"
+
+
+def test_chat_history_is_capped():
+    assert client.post("/api/chat", json={"message": "hi", "history": [{"from": "you", "text": "x"}] * 9}).status_code == 422

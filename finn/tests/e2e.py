@@ -221,6 +221,36 @@ with sync_playwright() as p:
         expect(pg.locator(".about")).to_have_count(0)
         pg.get_by_role("button", name="Clear conversation").click()
 
+    def chat_says_hi():
+        pg.goto(f"{BASE}/chat", wait_until="networkidle")
+        ask = pg.get_by_placeholder("Ask about a company")
+        ask.fill(f"{symbol} track record")
+        ask.press("Enter")
+        expect(pg.locator(".about")).to_contain_text(symbol)
+        answers = pg.locator(".bubble-finn")
+        count = answers.count()
+        follow = pg.get_by_placeholder(f"Ask about {symbol}")
+        follow.fill("Hi")
+        follow.press("Enter")
+        expect(answers).to_have_count(count + 1, timeout=20000)
+        said = answers.last.inner_text()
+        assert "can't tell which company" not in said and "calls" not in said.split("earnings calls")[0], said
+        expect(pg.locator(".about")).to_contain_text(symbol)
+        pg.get_by_role("button", name=f"Stop talking about {symbol}").click()
+        pg.get_by_role("button", name="Clear conversation").click()
+
+    def moving_now_banner():
+        # Market hours can't be waited for, so the clock is held at 11:00 IST on a weekday and the live answer is filled in.
+        other = b.new_context(viewport={"width": 390, "height": 844}, service_workers="block")
+        live = other.new_page()
+        live.clock.set_fixed_time("2026-11-03T05:30:00Z")
+        live.route("**/api/live*", lambda r: r.fulfill(json={"moving": [{"symbol": "DIXON", "price": 100.0, "move_pct": 6.2, "vol_x": 2.4, "as_of": "3 Nov, 11:00 IST"}]}))
+        live.goto(BASE, wait_until="networkidle")
+        banner = live.locator(".movers", has_text="Moving now")
+        expect(banner).to_contain_text("DIXON")
+        expect(banner).to_contain_text("2.4× vol so far")
+        other.close()
+
     def own_holdings():
         pg.goto(f"{BASE}/watch", wait_until="networkidle")
         pg.wait_for_selector(".quote-row")
@@ -303,6 +333,8 @@ with sync_playwright() as p:
     step("Peers and forces appear in a dossier", new_sections)
     step("The brief says what's new since you last looked", since_last_visit)
     step("Chat keeps the company for a follow-up", chat_remembers_the_company)
+    step("Chat says hi back and stays on the company", chat_says_hi)
+    step("Limits show live moves during market hours", moving_now_banner)
     step("Holdings can be edited and survive a reload", own_holdings)
     step("Your holdings decide what the brief shows", own_holdings_change_the_brief)
     step("The brief shows what's coming up", coming_up)

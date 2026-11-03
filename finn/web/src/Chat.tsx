@@ -126,7 +126,7 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
     try {
       reply = await api<Reply>("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, move: settings.movePct, vol: settings.volX, about, symbols: myHoldings()?.join(",") ?? null }),
+        body: JSON.stringify({ message, move: settings.movePct, vol: settings.volX, about, symbols: myHoldings()?.join(",") ?? null, history: messages.slice(-4).map((m) => ({ from: m.from, text: m.text })) }),
       });
     } catch {
       reply = { text: "I couldn't reach FINN just now. Check your connection and try again." };
@@ -154,7 +154,7 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
     <div className="chat">
       <header className="mast">
         <h1 className="lede">Ask FINN.</h1>
-        <p className="moment">Alerts land here. Answers come only from filings, filed results, prices and earnings calls, and FINN says when it doesn't know.</p>
+        <p className="moment">Alerts land here. Anything about a company comes only from filings, filed results, prices and earnings calls, and FINN says when it doesn't know.</p>
       </header>
 
       <MovingNow settings={settings} open={open} />

@@ -7,7 +7,7 @@ A mobile-first financial investment agent for Indian equities, built for the ENA
 Open it on a phone and try:
 
 1. **Brief:** the filings that matter from the last 24 hours or any dates you pick, ranked by how such filings have actually moved stocks, plus the board meetings and results coming up. Tick them off until it says "That's everything."
-2. **Chat:** your alerts, and questions answered from FINN's records. Try "Dixon's track record", then "and its results?". It remembers who you were talking about.
+2. **Chat:** your alerts, and questions answered from FINN's records. Try "Dixon's track record", then "and its results?". It remembers who you were talking about, and it can make conversation too, on a free model that isn't allowed to state a company's facts.
 3. **Research:** enter `KAYNES`. FY26 revenue was guided at ₹4,500 crore plus and came in at ₹3,626 crore, with the quote, page and filing one tap away. Open its one-page summary to print or share. Then try a ticker of your own: its numbers appear first, and its track record fills in behind them.
 4. **Watch:** live prices for your holdings, which you can edit. Move the limits and see how many alerts each setting would have sent over the last 30 sessions. While the market is open, the limits check live prices.
 
@@ -66,7 +66,7 @@ The repo ships a database with real data, so it works immediately with no keys. 
 
 Refresh data with `uv run python -m finn.pipeline refresh`. Read older filings with `uv run python -m finn.pipeline backlog --limit 50`, most important first; run it again on another day to continue.
 
-**Deploy:** the `Dockerfile` builds a single image. Any Docker host works, such as Hugging Face Spaces (Docker) or Render. Set `PORT` if the host requires it.
+**Deploy:** the `Dockerfile` builds a single image, and any Docker host works. Render's free plan runs it with Root Directory set to `finn` and `GROQ_API_KEY` set. Set `PORT` if the host requires it.
 
 ## Tests and evaluation
 

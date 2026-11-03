@@ -565,12 +565,13 @@ def alerts(move: float = Query(5, gt=0, le=50), vol: float = Query(2, gt=0, le=5
 def chat_message(
     message: str = Body(..., embed=True, min_length=1, max_length=400), move: float = Body(5, embed=True), vol: float = Body(2, embed=True),
     about: str | None = Body(None, embed=True, max_length=20), symbols: str | None = Body(None, embed=True, max_length=800),
+    history: list[dict] = Body([], embed=True, max_length=8),
 ):
     def ask_about(symbol: str, question: str) -> dict:
         return ask(symbol, question if len(question) >= 3 else f"{question} ?")
     if about and not SYMBOL.match(about.upper()):
         about = None
-    return chat.answer(message, ask_about, move, vol, about.upper() if about else None, _holdings(symbols))
+    return chat.answer(message, ask_about, move, vol, about.upper() if about else None, _holdings(symbols), history)
 
 
 @app.get("/api/push")

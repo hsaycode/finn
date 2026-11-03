@@ -56,8 +56,23 @@ JUDGE_FORMAT = """Return a JSON array with one element per promise:
  "note": "under 16 plain words explaining the verdict"}"""
 
 
+def _in_batches(lines: list[str], separator: str = "\n") -> list[str]:
+    """One request normally. On the free tier a large one is rejected outright, so the work is split."""
+    limit = llm.source_chars(10**9)
+    batches, current, size = [], [], 0
+    for line in lines:
+        if current and size + len(line) > limit:
+            batches.append(separator.join(current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line) + len(separator)
+    if current:
+        batches.append(separator.join(current))
+    return batches
+
+
 def _in_context(call: T.Call, s: T.Sentence, terms: list[str]) -> str:
-    before, _ = call.nearby(s)
+    before, _ = call.nearby(s, width=120 if llm.frugal() else 220)
     text = T.mask(s.text, terms)
     return f'(just before: "{T.mask(before, terms)}") {text}' if before else text
 
@@ -85,7 +100,12 @@ def _period_fits(period: str | None, quote: str, said_end: str) -> bool:
     """'Over the next few quarters' can't fall due at the end of the fiscal year that has one quarter left.
     Reliance's 'current year' meant 2026, and read as FY26 it became a false miss."""
     due = parse_period(period)
-    if not due or not said_end or not _FEW_QUARTERS.search(quote):
+    if not due or not said_end:
+        return True
+    # A promise can't fall due in a quarter already over when it was made. On a Q4 call, "current fiscal" is the next one.
+    if due["end"] <= said_end:
+        return False
+    if not _FEW_QUARTERS.search(quote):
         return True
     a, b = date.fromisoformat(said_end), date.fromisoformat(due["end"])
     return (b.year - a.year) * 12 + b.month - a.month > 3
@@ -126,9 +146,11 @@ def extract(call: T.Call, mask_terms: list[str]) -> list[dict]:
     cands = T.candidates(call)
     if not cands:
         return []
-    lines = "\n".join(f"[{s.id}] {_in_context(call, s, mask_terms)}" for s in cands)
-    prompt = f"This call discusses {call.label} (India's fiscal year ends in March).\n\n{EXTRACT_FORMAT}\n\n<source>\n{lines}\n</source>"
-    out = llm.ask_json("promise_extract_v3", llm.CHEAP, EXTRACT_SYSTEM, prompt, max_tokens=5000)
+    out = []
+    for lines in _in_batches([f"[{s.id}] {_in_context(call, s, mask_terms)}" for s in cands]):
+        prompt = f"This call discusses {call.label} (India's fiscal year ends in March).\n\n{EXTRACT_FORMAT}\n\n<source>\n{lines}\n</source>"
+        part = llm.ask_json("promise_extract_v3", llm.CHEAP, EXTRACT_SYSTEM, prompt, max_tokens=5000)
+        out += part if isinstance(part, list) else []
     by_id = call.by_id()
     promises = []
     for item in out if isinstance(out, list) else []:
@@ -302,7 +324,7 @@ def judge_operational(promises: list[dict], calls: list[T.Call], latest_period: 
     work, seen = [], {}
     for i, p in enumerate(promises):
         later = [c for c in calls if c.index < p["call"]]
-        ev = evidence_for(p, later)
+        ev = evidence_for(p, later, limit=3 if llm.frugal() else 6)
         p["_key"] = f"p{i}"
         if ev:
             work.append((p, ev))
@@ -311,6 +333,23 @@ def judge_operational(promises: list[dict], calls: list[T.Call], latest_period: 
             p.update(_no_later(p, latest_period))
     if not work:
         return
+    # On the free tier these go a few at a time. Each promise's evidence travels with it.
+    limit = llm.source_chars(10**9)
+    groups, current, size = [], [], 0
+    for item in work:
+        cost = 700 + sum(len(s.text) + 150 for s in item[1])
+        if current and size + cost > limit:
+            groups.append(current)
+            current, size = [], 0
+        current.append(item)
+        size += cost
+    groups.append(current)
+    for group in groups:
+        _judge_group(group, calls, today_label, latest_period, mask_terms)
+
+
+def _judge_group(work: list, calls: list[T.Call], today_label: str, latest_period: str, mask_terms: list[str]) -> None:
+    seen = {s.id: s for _, ev in work for s in ev}
     blocks = []
     for p, ev in work:
         said = T.mask(p["quote"], mask_terms)[:300]
@@ -360,6 +399,9 @@ def judge_operational(promises: list[dict], calls: list[T.Call], latest_period: 
         if verdict == DELIVERED and cited and not _qualifier_met(p["claim"], cited["quote"]):
             verdict, note = NO_EVIDENCE, f"The later call says less than was promised: {note}"
             p["note"] = note
+        if verdict == DELIVERED and cited and _only_a_plan(cited["quote"]):
+            verdict = NO_EVIDENCE
+            p["note"] = "The later call restates the plan and doesn't say it happened."
         p["verdict"] = verdict
         if cited:
             p["evidence"] = cited
@@ -386,6 +428,16 @@ def _with_surroundings(calls: list[T.Call], ids: list[str], quote: str, terms: l
 def second_opinion(promises: list[dict], terms: list[str], calls: list[T.Call] | None = None) -> None:
     """A separate pass tries to overturn each model-made verdict. A false 'delivered' costs more than a 'can't verify'."""
     settled = [p for p in promises if p.get("verdict") in (DELIVERED, PARTLY, MISSED) and p.get("evidence")]
+    # Three at a time on the free tier, because each carries the text around it.
+    step = 3 if llm.frugal() else max(1, len(settled))
+    for start in range(0, len(settled), step):
+        _review_group(settled[start:start + step], terms, calls)
+
+
+SETTLED = (DELIVERED, PARTLY, MISSED)
+
+
+def _review_group(settled: list[dict], terms: list[str], calls: list[T.Call] | None) -> None:
     if not settled:
         return
     blocks = []
@@ -400,7 +452,8 @@ def second_opinion(promises: list[dict], terms: list[str], calls: list[T.Call] |
     try:
         out = llm.ask_json("promise_review_v2", llm.STRONG, REVIEW_SYSTEM, prompt, max_tokens=3000)
     except (llm.NoModel, llm.BudgetExceeded, ValueError):
-        return
+        out = None
+    upheld = set()
     for r in out if isinstance(out, list) else []:
         m = re.fullmatch(r"r(\d+)", str(r.get("key"))) if isinstance(r, dict) else None
         if m and int(m[1]) < len(settled) and r.get("upheld") is False:
@@ -408,6 +461,15 @@ def second_opinion(promises: list[dict], terms: list[str], calls: list[T.Call] |
             p["overturned"] = {"verdict": p["verdict"], "note": p.get("note")}
             p["verdict"] = NO_EVIDENCE
             p["note"] = r.get("why") or "Later calls don't settle this directly."
+        elif m and int(m[1]) < len(settled) and r.get("upheld") is True:
+            upheld.add(int(m[1]))
+    # The free models make more mistakes, so on them silence doesn't count as agreement.
+    if llm.frugal():
+        for i, p in enumerate(settled):
+            if i not in upheld and p["verdict"] in SETTLED:
+                p["overturned"] = {"verdict": p["verdict"], "note": p.get("note")}
+                p["verdict"] = NO_EVIDENCE
+                p["note"] = "A second reading didn't confirm this, so it stays unverified."
 
 
 def _consistent(verdict: str, claim: str, note: str) -> str:
@@ -426,6 +488,16 @@ def _consistent(verdict: str, claim: str, note: str) -> str:
 
 
 _QUALIFIERS = ("fully", "full capacity", "full utili", "commercial production", "mass production", "peak", "completed", "complete")
+
+
+_PLAN = re.compile(r"\b(will|shall|going to|expect(ed|s)? to|plan(s|ning)? to|should|(is|are) expanding|on track|yet to)\b", re.I)
+_DONE = re.compile(r"(?<!\bbe )\b(completed|started|commenced|began|achieved|delivered|crossed|reached|launched|closed|was|were|did)\b|\b(have|has|had)\s+(\w+\s+)?\w+(ed|en|un|ne)\b|\b(is|are)\s+(now\s+)?(operational|live)\b", re.I)
+
+
+def _only_a_plan(evidence: str) -> bool:
+    """"We are expanding" and "trials will start" say what's coming, so neither can show a promise was kept.
+    A free model marked both delivered, and a second reading agreed."""
+    return bool(_PLAN.search(evidence)) and not _DONE.search(evidence)
 
 
 def _qualifier_met(claim: str, evidence: str) -> bool:
@@ -535,6 +607,15 @@ def group_restated(promises: list[dict], terms: list[str]) -> list[dict]:
     pool = [p for p in promises if p["kind"] != "vague"]
     if len(pool) < 2:
         return promises
+    if llm.frugal():
+        # Grouping needs the list whole, so on the free tier only as many as fit in one request get grouped.
+        keep = len(pool)
+        while keep > 2 and sum(250 + len(p["claim"]) for p in pool[:keep]) > llm.source_chars(10**9):
+            keep -= 1
+        rest = pool[keep:]
+        pool = pool[:keep]
+    else:
+        rest = []
     lines = "\n".join(f"[{i}] ({p['call_label']}, due {p.get('period') or 'unstated'}) {T.mask(p['claim'], terms)} | said: {T.mask(p['quote'], terms)[:160]}" for i, p in enumerate(pool[:70]))
     try:
         groups = llm.ask_json(
@@ -547,7 +628,50 @@ def group_restated(promises: list[dict], terms: list[str]) -> list[dict]:
     if not isinstance(groups, list):
         return promises
     merged = merge_restated(pool, [g for g in groups if isinstance(g, list)])
-    return merged + [p for p in promises if p["kind"] == "vague"]
+    return merged + rest + [p for p in promises if p["kind"] == "vague"]
+
+
+SETTLED = (DELIVERED, PARTLY, MISSED)
+_ORDER = {MISSED: 0, PARTLY: 1, DELIVERED: 2, NOT_DUE: 3, NO_EVIDENCE: 4, VAGUE: 5}
+
+
+def _tallied(pr: dict) -> dict:
+    pr["promises"].sort(key=lambda p: (_ORDER.get(p["verdict"], 9), -int(p["said_period"].replace("-", "") or 0)))
+    pr["tally"] = {k: sum(p["verdict"] == k for p in pr["promises"]) for k in _ORDER}
+    pr["testable"] = pr["tally"][DELIVERED] + pr["tally"][MISSED] + pr["tally"][PARTLY]
+    return pr
+
+
+def _promise_key(p: dict) -> str:
+    return f"{p['call_label']}|{re.sub(r'[^a-z0-9]+', '', p['quote'].lower())[:120]}"
+
+
+def keep_settled(pr: dict, previous: dict | None) -> dict:
+    """Once settled, a verdict stands. Models aren't repeatable, so a rebuild alone mustn't change someone's
+    record. It only moves if its new evidence comes from a call that wasn't there before, or if the filed
+    figures behind a code-scored verdict changed."""
+    old_pr = (previous or {}).get("promises") or {}
+    known_calls = {c["label"] for c in old_pr.get("calls", [])}
+    old = {_promise_key(p): p for p in old_pr.get("promises", []) if p["verdict"] in SETTLED and p.get("checked_by") != "code"}
+    if not old:
+        return pr
+    current = {c["label"] for c in pr["calls"]}
+    seen = set()
+    for p in pr["promises"]:
+        key = _promise_key(p)
+        was = old.get(key)
+        if not was:
+            continue
+        seen.add(key)
+        newer = p["verdict"] in SETTLED and (p.get("evidence") or {}).get("call_label") not in known_calls
+        if p.get("checked_by") != "code" and not newer:
+            for field in ("verdict", "note", "evidence", "actual", "overturned"):
+                p.pop(field, None)
+                if field in was:
+                    p[field] = was[field]
+    # A model can also fail to notice a promise it found last time, and that shouldn't erase the record.
+    pr["promises"] += [p for k, p in old.items() if k not in seen and p["call_label"] in current]
+    return _tallied(pr)
 
 
 def run(calls: list[T.Call], quarters: list[Quarter], company_name: str, log=lambda *_: None) -> dict:
@@ -611,12 +735,8 @@ def run(calls: list[T.Call], quarters: list[Quarter], company_name: str, log=lam
         p.setdefault("note", "")
     promises = group_restated(promises, terms)
     _label_business_lines(promises, by_end)
-    order = {MISSED: 0, PARTLY: 1, DELIVERED: 2, NOT_DUE: 3, NO_EVIDENCE: 4, VAGUE: 5}
-    promises.sort(key=lambda p: (order.get(p["verdict"], 9), -int(p["said_period"].replace("-", "") or 0)))
-    promises = [p for p in promises if p["material"] or p["verdict"] in (DELIVERED, PARTLY, MISSED)]
-    tally = {k: sum(p["verdict"] == k for p in promises) for k in order}
-    testable = tally[DELIVERED] + tally[MISSED] + tally[PARTLY]
-    return {
-        "promises": promises, "moves": moves, "tally": tally, "testable": testable, "model": model, "unread_calls": unread,
+    promises = [p for p in promises if p["material"] or p["verdict"] in SETTLED]
+    return _tallied({
+        "promises": promises, "moves": moves, "model": model, "unread_calls": unread,
         "calls": [{"label": c.label, "held": c.held, "url": c.url, "pages": c.pages, "scanned": c.scanned, "sentences": len(c.sentences)} for c in calls],
-    }
+    })

@@ -156,6 +156,7 @@ def groq_stub(monkeypatch):
     db().execute("DELETE FROM llm_calls")
     db().commit()
     GroqStub.bodies, GroqStub.reply, GroqStub.reject_effort = [], '{"answer": "ok", "ids": []}', False
+    llm._reset_gate()
     yield
     server.shutdown()
 
@@ -166,13 +167,50 @@ def test_chat_tasks_use_groq_with_the_settings_its_docs_require(groq_stub):
     assert auth == "Bearer gsk_test" and body["model"] == "qwen/qwen3.8-27b"
     assert body["response_format"] == {"type": "json_object"} and body["reasoning_format"] == "hidden"
     row = db().execute("SELECT provider, model, cost_usd FROM llm_calls").fetchone()
-    assert row["provider"] == "groq" and row["cost_usd"] == pytest.approx(0.0012)
+    assert row["provider"] == "groq" and row["cost_usd"] == 0
 
 
-def test_only_the_chat_uses_groq(groq_stub):
-    with pytest.raises(llm.NoModel):
-        llm.ask_json("promise_judge_v4", llm.STRONG, "sys", "a verdict")
+def test_research_runs_on_its_own_free_models_so_chat_keeps_qwen(groq_stub):
+    assert llm.provider() == "groq" and llm.frugal()
+    llm.ask_json("promise_judge_v4", llm.STRONG, "sys", "a verdict")
+    llm.ask_json("promise_extract_v3", llm.CHEAP, "sys", "a promise")
+    assert [b["model"] for _, b in GroqStub.bodies] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    assert "qwen/qwen3.8-27b" not in llm.GROQ_POOLS[llm.CHEAP] + llm.GROQ_POOLS[llm.STRONG]
+
+
+def test_a_list_answer_comes_back_as_a_list(groq_stub):
+    GroqStub.reply = '{"items": [{"key": "p0"}]}'
+    assert llm.ask_json("promise_judge_v4", llm.STRONG, "sys", "wrapped") == [{"key": "p0"}]
+
+
+def test_a_request_too_big_for_the_free_tier_is_refused_before_sending(groq_stub):
+    with pytest.raises(ValueError):
+        llm.ask_json("promise_judge_v4", llm.STRONG, "sys", "x" * 40000)
     assert GroqStub.bodies == []
+
+
+def test_the_minute_limit_makes_chat_give_up_quickly_and_moves_to_the_next_model(groq_stub, monkeypatch):
+    monkeypatch.setattr(llm, "FREE_TOKENS_PER_MINUTE", 1000)
+    monkeypatch.setattr(llm, "CHAT_PATIENCE_SECONDS", 0.5)
+    prompt = "x" * 1200
+    llm.ask_json("ask_v1", llm.CHEAP, "s", prompt + "1", max_tokens=100)
+    llm.ask_json("ask_v1", llm.CHEAP, "s", prompt + "2", max_tokens=100)
+    assert [b["model"] for _, b in GroqStub.bodies] == ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+    with pytest.raises(ValueError):
+        llm.ask_json("ask_v1", llm.CHEAP, "s", prompt + "3", max_tokens=100)
+
+
+def test_a_used_up_daily_allowance_stops_cleanly(groq_stub, monkeypatch):
+    monkeypatch.setattr(llm, "FREE_TOKENS_PER_DAY", 0)
+    assert not llm.available() and llm.free_room_share() == 0
+    with pytest.raises(llm.BudgetExceeded):
+        llm.ask_json("promise_extract_v3", llm.CHEAP, "s", "nothing left")
+
+
+def test_no_model_block_really_turns_models_off(groq_stub):
+    with llm.no_model():
+        assert llm.provider() is None and llm.provider_for("ask_v1") is None
+    assert llm.provider() == "groq"
 
 
 def test_groq_drops_a_setting_the_preview_model_rejects(groq_stub):
@@ -190,3 +228,30 @@ def test_chat_has_its_own_daily_limit(groq_stub, monkeypatch):
     llm.ask_json("ask_v1", llm.CHEAP, "sys", "first")
     with pytest.raises(llm.BudgetExceeded):
         llm.ask_json("ask_v1", llm.CHEAP, "sys", "second")
+
+
+@pytest.mark.parametrize("reply,expected", [
+    ('{"items": []}', []),
+    ('{"promises": [{"key": "p0"}]}', [{"key": "p0"}]),
+    ('{"key": "r0", "upheld": true}', [{"key": "r0", "upheld": True}]),
+    ('[{"key": "r0"}]', [{"key": "r0"}]),
+])
+def test_a_list_comes_back_as_a_list_however_json_mode_wrapped_it(groq_stub, reply, expected):
+    GroqStub.reply = reply
+    assert llm.ask_json("promise_review_v2", llm.STRONG, "sys", f"Return a JSON array. {reply}") == expected
+    assert llm.ask_json("promise_review_v2", llm.STRONG, "sys", f"Return a JSON array. {reply}") == expected
+
+
+def test_an_object_answer_isnt_mistaken_for_a_list(groq_stub):
+    GroqStub.reply = '{"bull": [1], "bear": [2]}'
+    assert llm.ask_json("bullbear_v1", llm.STRONG, "sys", "Return a JSON object.") == {"bull": [1], "bear": [2]}
+
+
+def test_groq_refusing_a_bare_list_still_gives_the_answer():
+    class Refused:
+        def json(self):
+            return {"error": {"code": "json_validate_failed", "failed_generation": "[]"}}
+
+    assert llm._failed_generation(Refused()) == "[]"
+    Refused.json = lambda self: {"error": {"failed_generation": ""}}
+    assert llm._failed_generation(Refused()) is None

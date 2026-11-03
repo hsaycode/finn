@@ -80,7 +80,7 @@ def background(row: dict, person: dict) -> dict:
         sources += [(f"Annual Report {report['year']}", report["url"], p, t) for p, t in pages]
     if not sources:
         return {}
-    text = "\n\n".join(f"[{label} p.{p}] {t[:3500]}" for label, _, p, t in sources)[:14000]
+    text = "\n\n".join(f"[{label} p.{p}] {t[:3500]}" for label, _, p, t in sources)[:llm.source_chars(14000)]
     try:
         r = llm.ask_json("person_v1", llm.CHEAP, PERSON_SYSTEM, PERSON_FORMAT.format(name=name) + f"\n\n<source>\n{text}\n</source>", max_tokens=600)
     except (llm.NoModel, llm.BudgetExceeded, ValueError):

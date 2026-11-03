@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { DEFAULT_SETTINGS, METRIC_NAMES, ago, api, cr, day, load, marketMoment, save, signed, type Brief, type Event, type Holding, type Person, type Pin, type ResultsCard, type Settings } from "./lib";
-import { alertsPath, type Alert } from "./Chat";
+import { DEFAULT_SETTINGS, METRIC_NAMES, ago, api, cr, day, load, marketMoment, mine, save, signed, type Brief, type Event, type Holding, type Person, type Pin, type ResultsCard, type Settings } from "./lib";
+import { MovingNow, alertsPath, type Alert } from "./Chat";
 import { Collapse, SourceLink, VerdictTag } from "./ui";
 
 const WINDOWS: [string, number][] = [["24 hours", 24], ["3 days", 72], ["7 days", 168], ["30 days", 720]];
@@ -227,6 +227,47 @@ function SinceLastVisit({ settings, open, goChat }: { settings: Settings; open: 
   );
 }
 
+interface Upcoming { symbol: string; date: string; kind: string; title: string; due?: string[] }
+
+/** Only dates a company has filed with the exchange. FINN doesn't estimate when results will come. */
+function ComingUp({ open }: { open: (s: string) => void }) {
+  const [events, setEvents] = useState<Upcoming[]>([]);
+  const [all, setAll] = useState(false);
+  useEffect(() => {
+    api<{ events: Upcoming[] }>(mine("/api/calendar?days=14")).then((r) => setEvents(r.events)).catch(() => {});
+  }, []);
+  if (!events.length) return null;
+  const shown = all ? events : events.slice(0, 4);
+  return (
+    <section className="coming" aria-label="Coming up">
+      <h2 className="eyebrow">Coming up · next 14 days</h2>
+      <ul>
+        {shown.map((e) => (
+          <li key={e.symbol + e.date + e.kind}>
+            <span className="when num">{day(e.date)}</span>
+            <button className="ticker" onClick={() => open(e.symbol)}>{e.symbol}</button>
+            <span>{e.title}</span>
+            {e.due && e.due.length > 0 && <p className="meta coming-due">They promised for this quarter: {e.due.join("; ")}</p>}
+          </li>
+        ))}
+      </ul>
+      {events.length > shown.length && <button className="link" onClick={() => setAll(true)}>Show {events.length - shown.length} more</button>}
+    </section>
+  );
+}
+
+function NotableRow({ e, open }: { e: Event; open: (s: string) => void }) {
+  return (
+    <Collapse
+      className="row"
+      summary={<><span className="ticker-plain">{e.symbol}</span> {e.title} <span className="when num">{ago(e.ts)}</span></>}
+    >
+      <p className="why">{e.reason}</p>
+      <EventBody e={e} open={open} />
+    </Collapse>
+  );
+}
+
 export function BriefScreen({ open, goChat }: { open: (s: string) => void; goChat: () => void }) {
   const [hours, setHours] = useState(() => load<number>("finn.hours", 24));
   const [span, setSpan] = useState<Span | null>(() => load<Span | null>("finn.span", null));
@@ -243,8 +284,8 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
   useEffect(() => {
     setBrief(null);
     setError(false);
-    api<Brief>(span ? `/api/brief?since=${span.from}&until=${span.to}` : `/api/brief?hours=${hours}`).then(setBrief).catch(() => setError(true));
-    api<{ companies: Holding[] }>("/api/portfolio").then((p) => setHoldings(p.companies)).catch(() => {});
+    api<Brief>(mine(span ? `/api/brief?since=${span.from}&until=${span.to}` : `/api/brief?hours=${hours}`)).then(setBrief).catch(() => setError(true));
+    api<{ companies: Holding[] }>(mine("/api/portfolio")).then((p) => setHoldings(p.companies)).catch(() => {});
     save("finn.hours", hours);
     save("finn.span", span);
   }, [hours, span?.from, span?.to]);
@@ -282,6 +323,9 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
   };
   const finished = top.filter((e) => done.includes(e.id)).length;
   const allDone = top.length > 0 && finished === top.length;
+  // Press releases are the most common kind of filing here, so they get a shelf of their own.
+  const news = notable.filter((e) => e.category === "press_release");
+  const grouped = news.length >= 3;
   const hidden = brief ? brief.routine.reduce((n, e) => n + e.filings.length, 0) : 0;
 
   return (
@@ -332,6 +376,8 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
       </header>
 
       <SinceLastVisit settings={settings} open={open} goChat={goChat} />
+
+      <MovingNow settings={settings} open={open} />
 
       {error && (
         <div className="empty">
@@ -388,18 +434,17 @@ export function BriefScreen({ open, goChat }: { open: (s: string) => void; goCha
         </div>
       )}
 
+      {brief && <ComingUp open={open} />}
+
       {brief && notable.length > 0 && (
         <Collapse summary={<><b>Worth knowing</b> <span className="count num">{notable.length}</span></>} defaultOpen={top.length === 0} className="tier">
-          {notable.map((e) => (
-            <Collapse
-              key={e.id}
-              className="row"
-              summary={<><span className="ticker-plain">{e.symbol}</span> {e.title} <span className="when num">{ago(e.ts)}</span></>}
-            >
-              <p className="why">{e.reason}</p>
-              <EventBody e={e} open={open} />
+          {notable.filter((e) => !grouped || e.category !== "press_release").map((e) => <NotableRow key={e.id} e={e} open={open} />)}
+          {grouped && (
+            <Collapse className="row" summary={<><b>Company news</b> <span className="count num">{news.length}</span></>}>
+              <p className="meta">The company's own press releases, in order of how often that kind has moved a stock.</p>
+              {news.map((e) => <NotableRow key={e.id} e={e} open={open} />)}
             </Collapse>
-          ))}
+          )}
         </Collapse>
       )}
 

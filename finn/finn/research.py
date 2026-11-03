@@ -124,7 +124,7 @@ def company_kpis(call: T.Call, terms: list[str]) -> list[dict]:
     try:
         r = llm.ask_json(
             "kpis_v1", llm.CHEAP, KPI_SYSTEM,
-            'Return a JSON array of up to 6, for the period just reported: {"name": "the metric, under 5 words", "value": "the figure with its unit, as said", "id": "the sentence id"}\n\n<source>\n' + lines[:14000] + "\n</source>",
+            'Return a JSON array of up to 6, for the period just reported: {"name": "the metric, under 5 words", "value": "the figure with its unit, as said", "id": "the sentence id"}\n\n<source>\n' + lines[:llm.source_chars(14000)] + "\n</source>",
             max_tokens=500,
         )
     except (llm.NoModel, llm.BudgetExceeded, ValueError):
@@ -176,7 +176,7 @@ def strategic_forces(calls: list[T.Call], terms: list[str]) -> dict | None:
     try:
         r = llm.ask_json(
             "forces_v1", llm.CHEAP, FORCES_SYSTEM,
-            f'Return JSON with these keys: {keys}. Each value is an array of at most 2: {{"id": "sentence id", "effect": "headwind", "tailwind" or "neutral"}}\n\n<source>\n' + lines[:15000] + "\n</source>",
+            f'Return JSON with these keys: {keys}. Each value is an array of at most 2: {{"id": "sentence id", "effect": "headwind", "tailwind" or "neutral"}}\n\n<source>\n' + lines[:llm.source_chars(15000)] + "\n</source>",
             max_tokens=900,
         )
     except (llm.NoModel, llm.BudgetExceeded, ValueError):
@@ -510,7 +510,7 @@ def business(c: screener.Company, quarters: list[nse.Quarter], filings_industry:
             "business_v2", llm.CHEAP,
             "You describe what a listed company does for an investor, using only the annual report text given. No outside knowledge. Refer to it as 'the company'. "
             "Never comment on the text itself or what it omits. If it doesn't describe the business, return null for the description.",
-            'Return JSON: {"description": "what it does and how it makes money, under 35 plain words, or null", "page": page number where this is stated}\n\n<source>\n' + pages[:16000] + "\n</source>",
+            'Return JSON: {"description": "what it does and how it makes money, under 35 plain words, or null", "page": page number where this is stated}\n\n<source>\n' + pages[:llm.source_chars(16000)] + "\n</source>",
             max_tokens=300,
         )
         # A figure that isn't in the pages it read isn't shown.
@@ -542,7 +542,7 @@ def business_from_call(c: screener.Company, call: T.Call, log) -> dict | None:
             "business_call_v1", llm.CHEAP,
             "You describe what a listed company does for an investor, using only what its management said on an earnings call. No outside knowledge. "
             "Refer to it as 'the company'. If the text doesn't make the business clear, return null for the description.",
-            'Return JSON: {"description": "what it does and how it makes money, under 35 plain words, or null", "id": "the sentence id that best shows this"}\n\n<source>\n' + lines[:12000] + "\n</source>",
+            'Return JSON: {"description": "what it does and how it makes money, under 35 plain words, or null", "id": "the sentence id that best shows this"}\n\n<source>\n' + lines[:llm.source_chars(12000)] + "\n</source>",
             max_tokens=300,
         )
     except (llm.NoModel, llm.BudgetExceeded, ValueError):
@@ -569,7 +569,7 @@ def contingent_liabilities(doc: docs.Doc) -> dict | None:
         r = llm.ask_json(
             "contingent_v1", llm.CHEAP,
             "You read the notes to an Indian company's accounts. Use only what is printed. Use nulls if no total is stated. Don't add figures up yourself.",
-            'Return JSON for the latest year\'s consolidated total of contingent liabilities (not commitments), or standalone if that\'s all there is: {"printed": "the total exactly as printed, such as 1,234.56", "unit": "crore", "lakh", "million" or "billion", "basis": "consolidated" or "standalone", "page": n}\n\n<source>\n' + text[:16000] + "\n</source>",
+            'Return JSON for the latest year\'s consolidated total of contingent liabilities (not commitments), or standalone if that\'s all there is: {"printed": "the total exactly as printed, such as 1,234.56", "unit": "crore", "lakh", "million" or "billion", "basis": "consolidated" or "standalone", "page": n}\n\n<source>\n' + text[:llm.source_chars(16000)] + "\n</source>",
             max_tokens=200,
         )
     except (llm.NoModel, llm.BudgetExceeded, ValueError):
@@ -599,7 +599,8 @@ def annual_report_flags(c: screener.Company, log) -> dict | None:
     if len(c.annual_reports) < 1:
         return None
     reports = []
-    for ar in c.annual_reports[:2]:
+    # Comparing two years is a luxury the free tier can't always afford.
+    for ar in c.annual_reports[:1 if llm.frugal() else 2]:
         try:
             log(f"Reading the notes in Annual Report {ar['year']}")
             d = docs.load(ar["url"], headers=T.headers_for(ar["url"]))
@@ -629,7 +630,7 @@ def annual_report_flags(c: screener.Company, log) -> dict | None:
                 "You extract specific disclosures from pages of an Indian company's annual report. Only what is stated. Use null when not stated.",
                 'Return JSON: {"auditor": {"opinion": "unmodified"|"qualified"|"adverse"|"not_found", "emphasis": "matter the auditor emphasised, under 15 words, or null", "page": n or null}, '
                 '"contingent_crore": consolidated total contingent liabilities in Rs crore if a total is given else null, "contingent_page": n or null, '
-                '"rpt_note": "the largest or most notable related-party dealing, under 18 words, or null", "rpt_page": n or null}\n\n<source>\n' + r["text"][:14000] + "\n</source>",
+                '"rpt_note": "the largest or most notable related-party dealing, under 18 words, or null", "rpt_page": n or null}\n\n<source>\n' + r["text"][:llm.source_chars(14000)] + "\n</source>",
                 max_tokens=400,
             )
         except (llm.NoModel, llm.BudgetExceeded, ValueError):
@@ -697,7 +698,7 @@ def dodged_questions(call: T.Call, terms: list[str]) -> list[dict]:
     try:
         r = llm.ask_json(
             "dodge_v1", llm.CHEAP, DODGE_SYSTEM,
-            'Return a JSON array, usually short. Each element: {"q": the question id, "a": the id of the most telling reply sentence, "why": "what was asked and not answered, under 14 words"}\n\n<source>\n' + body + "\n</source>",
+            'Return a JSON array, usually short. Each element: {"q": the question id, "a": the id of the most telling reply sentence, "why": "what was asked and not answered, under 14 words"}\n\n<source>\n' + body[:llm.source_chars(10**9)] + "\n</source>",
             max_tokens=900,
         )
     except (llm.NoModel, llm.BudgetExceeded, ValueError):
@@ -795,7 +796,7 @@ def collect_facts(snapshot, traj, sheet, cash, pr) -> list[dict]:
     return facts
 
 
-def build(symbol: str, log=lambda *_: None, full: bool = True) -> dict:
+def build(symbol: str, log=lambda *_: None, full: bool = True, quick: bool = False) -> dict:
     symbol = symbol.upper().strip()
     log("Finding the company")
     try:
@@ -826,6 +827,15 @@ def build(symbol: str, log=lambda *_: None, full: bool = True) -> dict:
     sheet = balance_sheet(c, banking)
     cash = cash_quality(c, banking)
     biz = business(c, quarters, industry, log)
+    if quick:
+        # What's already filed and calculated, up in seconds. The record is read behind it.
+        return {
+            "symbol": symbol, "name": c.name, "consolidated": c.consolidated, "generated": datetime.now().isoformat(timespec="seconds"),
+            "business": biz, "snapshot": snapshot, "trajectory": traj, "balance_sheet": sheet, "cash": cash,
+            "promises": None, "dodged": [], "ar_flags": None, "arguments": None, "missing": [], "kpis": [], "forces": None,
+            "peers": screener.peers(c), "incomplete": nse_down,
+            "sources": {"screener": c.source_url, "transcripts": [], "annual_reports": c.annual_reports[:2]},
+        }
 
     calls = load_calls(c, log)
     terms = T.mask_terms(c.name)
@@ -841,6 +851,7 @@ def build(symbol: str, log=lambda *_: None, full: bool = True) -> dict:
     pr = P.run(calls, quarters, c.name, log) if calls else None
     if pr:
         pr["source"] = "earnings_calls" if earnings_calls else "annual_reports"
+        pr = P.keep_settled(pr, load(symbol))
     dodged = dodged_questions(calls[0], terms) if earnings_calls else []
     kpis = company_kpis(calls[0], terms) if earnings_calls else []
     forces = strategic_forces(calls, terms) if full and calls else None
@@ -870,14 +881,14 @@ def build(symbol: str, log=lambda *_: None, full: bool = True) -> dict:
     if old:
         missing.append(old)
     if pr and not pr["model"]:
-        missing.append("No model was available (none configured, or today's spending limit reached), so promises weren't extracted for this company.")
+        missing.append("No model was available (none configured, or today's free allowance used up), so promises weren't extracted for this company yet. FINN tries again when you next open it.")
     if pr and pr.get("unread_calls"):
         missing.append(f"The model failed on {pr['unread_calls']} of {len(calls)} calls, so this track record is partial. FINN will try again when you next open this company.")
 
     return {
         "symbol": symbol, "name": c.name, "consolidated": c.consolidated, "generated": datetime.now().isoformat(timespec="seconds"),
         "business": biz, "snapshot": snapshot, "trajectory": traj, "balance_sheet": sheet, "cash": cash,
-        "promises": pr, "dodged": dodged, "ar_flags": flags, "arguments": arguments, "missing": missing, "kpis": kpis, "forces": forces, "peers": screener.peers(c),
+        "promises": pr, "dodged": dodged, "ar_flags": flags, "arguments": arguments, "missing": missing, "built_by": llm.provider(), "kpis": kpis, "forces": forces, "peers": screener.peers(c),
         "incomplete": nse_down or bool(pr and pr.get("unread_calls")),
         "sources": {"screener": c.source_url, "transcripts": [x for x in (pr or {}).get("calls", [])], "annual_reports": c.annual_reports[:2]},
     }

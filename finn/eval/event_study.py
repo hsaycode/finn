@@ -8,6 +8,7 @@ Only outcomes are kept. Prices and filings sit in the disposable cache; what shi
 table of evidence per filing type, finn/calibration.json.
 
     python eval/event_study.py fetch    # filings and prices, slow the first time, then cached
+    python eval/event_study.py reclassify   # after a rule changes: filings again, keeping the prices
     python eval/event_study.py report   # measure, hold out the latest months, write calibration.json
 
 Limits: a price move is evidence that investors cared, not proof a filing caused it. Things that
@@ -37,7 +38,7 @@ PRICES = CACHE_DIR / "event_prices.json.gz"
 OUT = Path(__file__).resolve().parent.parent / "finn" / "calibration.json"
 
 
-def fetch() -> None:
+def fetch(prices_too: bool = True) -> None:
     now = datetime.now()
     seen, rows = set(), []
     for w in range(WEEKS):
@@ -58,6 +59,8 @@ def fetch() -> None:
         json.dump(rows, fh)
     symbols = sorted({r[0] for r in rows})
     print(f"{len(rows):,} filings, {len(symbols):,} companies", flush=True)
+    if not prices_too:
+        return
     series = {}
     for i, sym in enumerate(symbols + ["^NSEI"]):
         try:
@@ -352,4 +355,4 @@ def spearman(a: list, b: list) -> float:
 
 
 if __name__ == "__main__":
-    {"fetch": fetch, "report": report}[sys.argv[1] if len(sys.argv) > 1 else "report"]()
+    {"fetch": fetch, "reclassify": lambda: fetch(prices_too=False), "report": report}[sys.argv[1] if len(sys.argv) > 1 else "report"]()

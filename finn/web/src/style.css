@@ -361,3 +361,54 @@ p, h1, h2, h3, h4, figure, blockquote, dl, dd { margin: 0; }
 .rules b { font-weight: 600; }
 .mover-date { width: 100%; }
 .slip { font-size: 13px; font-weight: 500; margin-top: 8px; color: var(--bad); }
+
+/* What's coming up, and your own holdings */
+.coming { margin-top: 18px; }
+.coming li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.coming li .when { flex: none; }
+.coming-due { width: 100%; }
+.sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.add-holding { margin: 8px 0; }
+.quote-editing { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+.quote-editing .quote-row { grid-template-columns: 1fr 76px 56px; min-width: 0; }
+.quote-editing svg { display: none; }
+.composer { flex-wrap: wrap; }
+.composer .about { width: 100%; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink2); }
+.composer .about .link { margin-left: auto; }
+.reading { margin: 10px 0 14px; padding: 12px 14px; background: color-mix(in srgb, var(--accent) 7%, var(--surface)); border-radius: 8px; }
+.reading p + p { margin-top: 4px; }
+
+/* The one-page summary */
+.summary-link { display: inline-block; margin-top: 6px; }
+.summary-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.summary-actions .chip + .chip { margin-left: 6px; }
+.summary-list { margin-top: 10px; }
+.summary-list > li { padding: 10px 0; border-top: 1px solid var(--line); }
+.summary-points { margin-top: 6px; }
+.summary-points li { padding: 5px 0; font-size: 14px; }
+
+@media print {
+  .tabs, .no-print, .composer { display: none !important; }
+  :root { color-scheme: light; }
+  body { background: #fff; color: #111; }
+  .page { max-width: none; padding: 0; margin: 0; }
+  @page { size: A4; margin: 11mm; }
+  .summary { columns: 2; column-gap: 7mm; font-size: 8.6pt; line-height: 1.32; }
+  .summary .dossier-head, .summary > .asof { column-span: all; }
+  .summary .dossier-name { font-size: 17pt; }
+  .summary .sec { margin: 0 0 7px; padding: 0; border: 0; }
+  .summary h2 { font-size: 11.5pt; margin: 0 0 3px; }
+  .summary h3 { margin: 4px 0 1px; }
+  .summary .score { font-size: 9.5pt; margin: 0; }
+  .summary p, .summary li, .summary .meta, .summary table, .summary th, .summary td { font-size: 8.2pt; }
+  .summary .summary-list { margin-top: 3px; }
+  .summary .summary-list > li { padding: 3px 0; break-inside: avoid; }
+  .summary .summary-points { margin-top: 1px; }
+  .summary .summary-points li { padding: 1px 0; break-inside: avoid; }
+  .summary .quote { margin: 2px 0; padding: 0 0 0 6px; break-inside: avoid; }
+  .summary blockquote { font-size: 8pt; line-height: 1.28; }
+  .summary figcaption, .summary .eyebrow, .summary .asof { font-size: 7pt; margin-top: 1px; }
+  .summary .swing { font-size: 8.6pt; margin-top: 3px; padding: 0; }
+  .summary .results th, .summary .results td { padding: 1px 3px; }
+  .summary a { color: #111; font-size: 7pt; }
+}

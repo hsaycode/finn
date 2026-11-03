@@ -1,17 +1,50 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CompareTable } from "./Compare";
-import { DEFAULT_SETTINGS, ago, api, load, save, type Settings } from "./lib";
+import { DEFAULT_SETTINGS, ago, api, load, marketMoment, mine, myHoldings, save, signed, type Settings } from "./lib";
 import { SourceLink } from "./ui";
 
 interface Item { symbol: string | null; title: string; detail: string | null; url: string | null; when: string | null }
-interface Reply { text: string; items?: Item[]; suggest?: string[]; table?: any; quotes?: { text: string; speaker: string; page: number; url: string; call_label: string }[] }
+interface Reply { about?: string | null; text: string; items?: Item[]; suggest?: string[]; table?: any; quotes?: { text: string; speaker: string; page: number; url: string; call_label: string }[] }
 interface Message extends Reply { from: "you" | "finn"; at: string }
 export interface Alert { kind: "filing" | "move"; ts: string; symbol: string; title: string; text: string; url: string | null; label: string; tone?: string; move?: number }
 
 const STARTERS = ["What matters today?", "What moved?", "Dixon's track record", "Compare Dixon and Kaynes"];
 const KEPT = 30;
 
-export const alertsPath = (s: Settings) => `/api/alerts?move=${s.movePct}&vol=${s.volX}&muted=${encodeURIComponent(s.muted.join(","))}`;
+export const alertsPath = (s: Settings) => mine(`/api/alerts?move=${s.movePct}&vol=${s.volX}&muted=${encodeURIComponent(s.muted.join(","))}`);
+
+interface Live { symbol: string; price: number; move_pct: number; vol_x: number | null; as_of: string }
+
+/** Holdings past your limits right now. Only while the market is open, because after that the close says the same. */
+export function MovingNow({ settings, open }: { settings: Settings; open: (s: string) => void }) {
+  const [moving, setMoving] = useState<Live[]>([]);
+  useEffect(() => {
+    if (marketMoment().label !== "Market open") return;
+    let alive = true;
+    const pull = () => api<{ moving: Live[] }>(mine(`/api/live?move=${settings.movePct}&vol=${settings.volX}`)).then((r) => alive && setMoving(r.moving)).catch(() => {});
+    pull();
+    const timer = window.setInterval(pull, 300000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+  if (!moving.length) return null;
+  return (
+    <section aria-label="Past your limits right now" className="movers">
+      <h2 className="eyebrow">Moving now · {moving[0].as_of}</h2>
+      {moving.slice(0, 6).map((m) => (
+        <div key={m.symbol} className="mover">
+          <button className="ticker" onClick={() => open(m.symbol)}>{m.symbol}</button>
+          <span className="num mover-figs">
+            <span className={m.move_pct >= 0 ? "up" : "down"}>{signed(m.move_pct)}</span>
+            {m.vol_x !== null && <span> · {m.vol_x.toFixed(1)}× vol so far</span>}
+          </span>
+        </div>
+      ))}
+    </section>
+  );
+}
 
 function AlertBubble({ a, open }: { a: Alert; open: (s: string) => void }) {
   return (
@@ -66,6 +99,7 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
   const [messages, setMessages] = useState<Message[]>(() => load("finn.chat", []));
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [about, setAbout] = useState<string | null>(() => load("finn.chat.about", null));
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -92,7 +126,7 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
     try {
       reply = await api<Reply>("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, move: settings.movePct, vol: settings.volX }),
+        body: JSON.stringify({ message, move: settings.movePct, vol: settings.volX, about, symbols: myHoldings()?.join(",") ?? null }),
       });
     } catch {
       reply = { text: "I couldn't reach FINN just now. Check your connection and try again." };
@@ -100,7 +134,14 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
     const all: Message[] = [...next, { ...reply, from: "finn", at: new Date().toISOString() }];
     setMessages(all);
     save("finn.chat", all.slice(-KEPT));
+    // A failed request keeps the conversation on the company it was on.
+    if (reply.about !== undefined) remember(reply.about);
     setBusy(false);
+  };
+
+  const remember = (symbol: string | null) => {
+    setAbout(symbol);
+    save("finn.chat.about", symbol);
   };
 
   const shown = showAll ? alerts : alerts.slice(0, 6);
@@ -115,6 +156,8 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
         <h1 className="lede">Ask FINN.</h1>
         <p className="moment">Alerts land here. Answers come only from filings, filed results, prices and earnings calls, and FINN says when it doesn't know.</p>
       </header>
+
+      <MovingNow settings={settings} open={open} />
 
       <section aria-label="Alerts">
         <h2 className="eyebrow">Alerts, newest first{alerts.length ? ` · ${alerts.length}` : ""}</h2>
@@ -136,14 +179,20 @@ export function ChatScreen({ open, onSeen }: { open: (s: string) => void; onSeen
           : <Answer key={i} m={m} open={open} send={send} />))}
         {busy && <div className="bubble bubble-finn"><div className="pulse" aria-hidden="true" /><p className="meta">Reading…</p></div>}
         {messages.length > 0 && !busy && (
-          <button className="link widen" onClick={() => { setMessages([]); save("finn.chat", []); }}>Clear conversation</button>
+          <button className="link widen" onClick={() => { setMessages([]); save("finn.chat", []); remember(null); }}>Clear conversation</button>
         )}
         <div ref={bottom} />
       </section>
 
       <form className="composer" onSubmit={submit}>
+        {about && (
+          <p className="about">
+            Talking about <button type="button" className="ticker" onClick={() => open(about)}>{about}</button>
+            <button type="button" className="link" aria-label={`Stop talking about ${about}`} onClick={() => remember(null)}>Clear</button>
+          </p>
+        )}
         <label className="sr" htmlFor="chat-input">Ask FINN</label>
-        <input id="chat-input" value={text} onChange={(e) => setText(e.target.value)} maxLength={400} placeholder="Ask about a company" autoComplete="off" />
+        <input id="chat-input" value={text} onChange={(e) => setText(e.target.value)} maxLength={400} placeholder={about ? `Ask about ${about}` : "Ask about a company"} autoComplete="off" />
         <button className="primary" disabled={busy || !text.trim()}>Send</button>
       </form>
     </div>

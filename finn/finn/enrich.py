@@ -24,7 +24,7 @@ def clean_title(text: str, raw_category: str) -> str:
     """Make the feed's line presentable, or return '' when it's only the label again."""
     t = re.sub(r"\s+", " ", text or "").strip(" ,.'\"‘’“”")
     t = re.sub(r"^(?:the\s+)?[\w&.,'()\- ]{2,70}?\s+has\s+(?:informed|submitted(?:\s+to)?)\s+(?:the\s+)?Exchange\s*(?:regarding|about|that|of|for|on)?\s*", "", t, flags=re.I)
-    m = re.match(r"a press release dated [^,]*,?\s*(?:titled\s*)?[\"“']?(.*)$", t, flags=re.I)
+    m = re.match(r"a press release dated .*?\btitled\s*[\"“']?\s*(.*)$", t, flags=re.I) or re.match(r"a press release dated [^,]*,?\s*[\"“']?(.*)$", t, flags=re.I)
     if m:
         t = m[1]
     t = re.sub(r"^press release\s*[-–:]\s*", "", t, flags=re.I)
@@ -105,7 +105,12 @@ CARD_SCHEMA = """Return JSON with exactly these keys:
 
 
 def extract_card(pdf_text: str) -> dict | None:
-    prompt = f"{CARD_SCHEMA}\n\n<source>\n{pdf_text[:9000]}\n</source>"
+    # The two sizes hold answers from paid and free models. Either one saves reading the filing again.
+    for size in (9000, 5000):
+        hit = llm.cached("card_v3", llm.CHEAP, CARD_SYSTEM, f"{CARD_SCHEMA}\n\n<source>\n{pdf_text[:size]}\n</source>")
+        if isinstance(hit, dict):
+            return hit
+    prompt = f"{CARD_SCHEMA}\n\n<source>\n{pdf_text[:llm.source_chars(9000, 5000)]}\n</source>"
     try:
         out = llm.ask_json("card_v3", llm.CHEAP, CARD_SYSTEM, prompt, max_tokens=900)
     except (llm.NoModel, llm.BudgetExceeded):
@@ -130,6 +135,14 @@ _ON_RECLASSIFY = {
 }
 
 
+# A free model said a chairman and a new CFO weren't top executives. Who holds the job isn't a matter of opinion.
+_TOP_ROLE = re.compile(r"\b(chief executive|ceo|(deputy |joint )?managing director|chief financial|cfo|chief operating|coo|chair(man|person|woman)|whole[- ]time director)\b", re.I)
+
+
+def _names_top_role(*texts: str) -> bool:
+    return any(_TOP_ROLE.search(t or "") and not re.search(r"committee|subsidiar", t, re.I) for t in texts)
+
+
 def rescore(v: C.Verdict, card: dict | None, amount: float | None, ttm_revenue: float | None, *, trust_amount: bool = True, source_text: str = "results") -> tuple[str, int, str]:
     """Re-judge with the filing's actual content. Returns (category, score, reason)."""
     category, score, reason = v.category, v.score, v.reason
@@ -137,6 +150,9 @@ def rescore(v: C.Verdict, card: dict | None, amount: float | None, ttm_revenue: 
     kind = card.get("kind")
     if kind in KINDS:
         category = "unclassified" if kind == "routine" else kind
+    # A board outcome approving results usually declares a dividend too. Results are the news.
+    if category == "dividend" and v.category == "results" and re.search(r"financial results|results for the", source_text, re.I):
+        return "results", 90, "New quarterly results filed"
 
     if kind == "routine":
         return category, min(score, 15), reason if score <= 15 else "Routine paperwork"
@@ -170,7 +186,7 @@ def rescore(v: C.Verdict, card: dict | None, amount: float | None, ttm_revenue: 
         action = person.get("action")
         if action == "reappointed":
             score, reason = (14 if person.get("independent_director") else 32), f"{who} re-appointed: no change at the top"
-        elif person.get("top_executive"):
+        elif person.get("top_executive") or _names_top_role(who, source_text):
             # Top tier because the brief names these as material. Their measured reaction is modest, so results outrank them.
             score, reason = (74 if action == "leaving" else 72), f"{who} {'leaving' if action == 'leaving' else 'appointed'}"
         elif person.get("independent_director"):

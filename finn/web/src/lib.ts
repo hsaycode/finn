@@ -95,6 +95,14 @@ export function save(key: string, value: unknown) {
   }
 }
 
+export const MAX_HOLDINGS = 30;
+export const myHoldings = () => load<string[] | null>("finn.holdings", null);
+/** Asks for your own holdings once you've changed them. They stay on your device, because FINN has no accounts. */
+export function mine(path: string) {
+  const h = myHoldings();
+  return h?.length ? `${path}${path.includes("?") ? "&" : "?"}symbols=${encodeURIComponent(h.join(","))}` : path;
+}
+
 export interface Settings { volX: number; movePct: number; muted: string[] }
 export const DEFAULT_SETTINGS: Settings = { volX: 2, movePct: 5, muted: [] };
 
@@ -107,7 +115,7 @@ export function marketMoment(now = new Date()): { label: string; note: string } 
   const weekday = ist.getDay();
   if (weekday === 0 || weekday === 6) return { label: "Market closed", note: "Weekend" };
   if (mins < 555) return { label: "Before the open", note: "Opens 9:15" };
-  if (mins < 930) return { label: "Market open", note: "Alerts use the close" };
+  if (mins < 930) return { label: "Market open", note: "Your limits check live prices" };
   return { label: "After the close", note: "Today's prices are final" };
 }
 

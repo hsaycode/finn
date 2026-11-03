@@ -185,7 +185,7 @@ def rules(raw: str, text: str, title: str = "") -> Verdict:
         return Verdict("business_update", 52, "Interim business numbers, ahead of or between results", True)
 
     if label.startswith("Press Release") or "press release" in blob or "media" in blob:
-        return Verdict("press_release", 30, "Press release", True)
+        return Verdict("press_release", 30, _press_kind(blob), True)
     if label in ("Agreements", "Memorandum of Understanding/Agreements", "Product launch"):
         return Verdict("press_release", 38, "New agreement or product", True)
 
@@ -193,6 +193,19 @@ def rules(raw: str, text: str, title: str = "") -> Verdict:
         # These labels carry no signal, so only the PDF can say what this is.
         return Verdict("unclassified", 30, "Unlabelled update: read the filing to place it", True)
     return Verdict("unclassified", 15, label or "Unlabelled filing")
+
+
+def _press_kind(blob: str) -> str:
+    """Press releases range from a large order to a sponsorship. Their measured reaction decides each kind's rank."""
+    kinds = (
+        ("Press release: an order or contract", r"\b(order|contract|award(ed)? |wins?\b|secures?|bags?\b|l1\b)"),
+        ("Press release: a deal or partnership", r"\b(acqui\w+|merger|stake|joint venture|partner\w*|collaborat\w+|alliance|mou\b|tie-?up)"),
+        ("Press release: about results", r"\b((financial|quarterly|annual|q[1-4]|half[- ]year\w*|audited|unaudited) results?|results for the|earnings|net profit|q[1-4] fy)\b"),
+        ("Press release: capacity or a plant", r"\b(capacity|plant|facility|commission\w*|expansion|factory|inaugurat\w+)"),
+        ("Press release: a product launch", r"\b(launch\w*|unveil\w*|introduc\w+|new product|rolls? out)"),
+        ("Press release: people or recognition", r"\b(appoint\w*|ceo|cfo|recogni\w+|ranked|csr\b|sustainab\w+|esg\b|donat\w+|felicitat\w+|conferred|honou?r\w*)"),
+    )
+    return next((name for name, pattern in kinds if re.search(pattern, blob)), "Press release: general")
 
 
 def _flags_exception(label: str, blob: str) -> bool:

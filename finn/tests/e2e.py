@@ -207,6 +207,74 @@ with sync_playwright() as p:
         pg.reload(wait_until="networkidle")
         expect(pg.locator(".since")).to_have_count(0)
 
+    def chat_remembers_the_company():
+        pg.goto(f"{BASE}/chat", wait_until="networkidle")
+        ask = pg.get_by_placeholder("Ask about a company")
+        ask.fill(f"{symbol} track record")
+        ask.press("Enter")
+        expect(pg.locator(".about")).to_contain_text(symbol)
+        follow = pg.get_by_placeholder(f"Ask about {symbol}")
+        follow.fill("and its results?")
+        follow.press("Enter")
+        expect(pg.locator(".bubble-finn").last.locator(".answer-items, table")).to_be_visible()
+        pg.get_by_role("button", name=f"Stop talking about {symbol}").click()
+        expect(pg.locator(".about")).to_have_count(0)
+        pg.get_by_role("button", name="Clear conversation").click()
+
+    def own_holdings():
+        pg.goto(f"{BASE}/watch", wait_until="networkidle")
+        pg.wait_for_selector(".quote-row")
+        before = pg.locator(".quote-row").count()
+        pg.get_by_role("button", name="Edit", exact=True).click()
+        first = pg.locator(".quote-row .ticker-plain").first.inner_text()
+        pg.get_by_role("button", name=f"Remove {first}").click()
+        expect(pg.locator(".quote-row")).to_have_count(before - 1)
+        pg.reload(wait_until="networkidle")
+        pg.wait_for_selector(".quote-row")
+        expect(pg.locator(".quote-row")).to_have_count(before - 1)
+        pg.get_by_role("button", name="Edit", exact=True).click()
+        box = pg.get_by_placeholder("Add an NSE ticker")
+        box.fill("NOSUCHCOMPANY1")
+        box.press("Enter")
+        expect(pg.get_by_role("status")).to_contain_text("NOSUCHCOMPANY1")
+        pg.get_by_role("button", name="Back to the default list").click()
+        expect(pg.locator(".quote-row")).to_have_count(before)
+        pg.get_by_role("button", name="Done").click()
+
+    def own_holdings_change_the_brief():
+        pg.goto(f"{BASE}/watch", wait_until="networkidle")
+        pg.evaluate("localStorage.setItem('finn.holdings', JSON.stringify(['TITAN']))")
+        pg.goto(BASE, wait_until="networkidle")
+        pg.get_by_role("button", name="30 days", exact=True).click()
+        pg.wait_for_load_state("networkidle")
+        tickers = set(pg.locator(".card .ticker").all_inner_texts())
+        assert tickers <= {"TITAN"}, tickers
+        pg.evaluate("localStorage.removeItem('finn.holdings')")
+
+    def coming_up():
+        pg.goto(BASE, wait_until="networkidle")
+        expect(pg.get_by_role("region", name="Coming up")).to_be_visible()
+
+    def company_news_shelf():
+        pg.goto(BASE, wait_until="networkidle")
+        pg.get_by_role("button", name="30 days", exact=True).click()
+        pg.wait_for_load_state("networkidle")
+        worth = pg.get_by_role("button", name="Worth knowing")
+        if worth.get_attribute("aria-expanded") == "false":
+            worth.click()
+        expect(pg.get_by_role("button", name="Company news")).to_be_visible()
+
+    def one_page_summary():
+        pg.goto(f"{BASE}/research/{symbol}", wait_until="networkidle")
+        pg.get_by_role("link", name="One-page summary").click()
+        expect(pg.get_by_role("heading", name="Did they do what they said?")).to_be_visible()
+        expect(pg.get_by_role("button", name="Print or save as PDF")).to_be_visible()
+        assert pg.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), "sideways scroll"
+        pg.emulate_media(media="print")
+        expect(pg.locator(".tabs")).to_be_hidden()
+        expect(pg.get_by_role("button", name="Print or save as PDF")).to_be_hidden()
+        pg.emulate_media(media="screen")
+
     def tab_routes():
         pg.goto(BASE, wait_until="networkidle")
         expect(pg.locator(".tabs button")).to_have_count(4)
@@ -234,6 +302,12 @@ with sync_playwright() as p:
     step("Holdings list shows live prices", holdings_list)
     step("Peers and forces appear in a dossier", new_sections)
     step("The brief says what's new since you last looked", since_last_visit)
+    step("Chat keeps the company for a follow-up", chat_remembers_the_company)
+    step("Holdings can be edited and survive a reload", own_holdings)
+    step("Your holdings decide what the brief shows", own_holdings_change_the_brief)
+    step("The brief shows what's coming up", coming_up)
+    step("Press releases get their own shelf", company_news_shelf)
+    step("A one-page summary prints cleanly", one_page_summary)
     step("Four tabs route correctly", tab_routes)
     b.close()
 

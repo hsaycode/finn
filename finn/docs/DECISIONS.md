@@ -20,6 +20,12 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 
 **No buy or sell calls.** FINN says what changed and leaves the decision to the investor.
 
+**Holdings live on the device.** There are no accounts, so each person's list stays in their browser and travels with each request. A company someone adds is followed by the server from then on. A free host forgets that when it restarts, so the app reminds it.
+
+**A calendar of filed dates only.** "Coming up" shows board meetings and ex-dates companies have announced to NSE, and for a results date, what management promised for that quarter. FINN doesn't estimate dates.
+
+**A verdict, once settled, stands.** Models aren't repeatable, and Dixon read 2 of 14, 3 of 14 and 3 of 15 across rebuilds, which is no way to keep score. A rebuild now keeps the earlier verdict unless its new evidence comes from a call that didn't exist before. Verdicts calculated from filings are always recalculated.
+
 ## What real data changed
 
 | I assumed | What the data showed | What changed |
@@ -29,8 +35,9 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 | Results need PDF parsing and a model | NSE publishes the exact XBRL the company filed | Results are parsed by code, at no cost |
 | Reported profit is the headline | Vodafone Idea shows ₹51,970 cr profit between losses of over ₹5,000 cr; Dixon's −49% is partly a high-other-income base | Cards flag one-offs and distorted comparisons |
 | All amounts scale with company size | A ₹2.79 cr petition admitted Polycab into insolvency | Admission is scored as serious at any amount |
-| My own scores reflect importance | Across 280,486 filings they only loosely tracked market reaction (rank correlation 0.31). Offer-for-sale filings were buried yet moved stocks 6.7× as often as a quiet day | Filing types are ranked by measured reaction, with a few documented exceptions |
+| My own scores reflect importance | Across 2.8 lakh filings they only loosely tracked market reaction (rank correlation 0.30). Offer-for-sale filings were buried yet moved stocks 6.7× as often as a quiet day | Filing types are ranked by measured reaction, with a few documented exceptions |
 | A CEO change is the biggest news | Top-executive changes moved stocks 1.6× as often as a quiet day, against 5.2× for results | Results outrank them. They stay in the top tier because the brief names them as material |
+| Press releases are one kind of filing | They were the largest group in "Worth knowing". Split by content, those about results moved stocks sharply 4.0× as often as a quiet day, orders 1.9×, and product launches 1.2× and new plants 1.1×, close to a quiet day | Each kind has its own measured rank, launches and plants drop to routine, and the rest get their own "Company news" shelf |
 | Every filing type behaves independently | Recordings and decks appeared to move stocks, because they sit next to results and calls | Filings within a session of results are excluded, and those types keep their low rank |
 | Transcripts exist for every company | About a quarter of random companies show no sign of holding investor calls | Annual reports stand in for them, and the app says when they do |
 | NBFCs and insurers file like everyone else | NBFCs were read as banks and insurers use another taxonomy, so their cards came out blank | Each format now gets its own parser and headline numbers |
@@ -56,10 +63,21 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 |---|---|---|
 | Sorting the obvious paperwork, about half of all filings | None (rules) | Free, and good enough for paperwork |
 | Results figures | None (XBRL) | Exact, and a model could only add errors |
-| Reading filing PDFs | Claude Haiku 5.5 | Structured extraction at about $0.001 each |
-| Extracting promises | Claude Haiku 5.5 | Input pre-filtered to about 10% of each transcript |
-| Judging promises, reviewing verdicts, bull and bear | Claude Sonnet 5.5 | Chosen by comparison, see below |
+| Reading filing PDFs | Shipped: Claude Haiku 5.5. New: gpt-oss-20b on Groq | Structured extraction |
+| Extracting promises | Shipped: Claude Haiku 5.5. New: gpt-oss-20b on Groq | Input pre-filtered to about 10% of each transcript |
+| Judging promises, reviewing verdicts, bull and bear | Shipped: Claude Sonnet 5.5. New: gpt-oss-120b on Groq | Chosen by comparison, see below |
 | Reading chat questions, summarising transcript sentences | Qwen 3.8 27B on Groq | Fast enough for a conversation. It's a preview model, so a figure missing from its quotes isn't shown, and an outage falls back to the passages |
+| Live limits, calendar, follow-up questions, one-page summary | None (code) | None of them needs a model, so none of them can run out of allowance |
+
+**Built around the free tier.** The brief says this is comfortably doable on free tiers, so nothing new may need a paid one. Groq's free limits are per model: 8,000 tokens a minute and 1,000 requests a day as its response headers report them, and 30 requests a minute and 200,000 tokens a day in its docs. So:
+
+- *Separate models for separate jobs.* Chat keeps Qwen to itself, so a long research build can't leave someone's question unanswered.
+- *FINN paces itself.* It tracks each model's use by the minute and the day, waits its turn in the background, and gives chat only a few seconds before trying the next model. It stops just short of the daily limit, and obeys Groq's own wait time if it's told to.
+- *Big jobs are split.* Long requests would simply be refused, so transcripts go in batches and verdicts a few at a time.
+- *Numbers first.* A new company's filed figures appear in seconds and its track record fills in behind them, because reading the calls takes 5 to 15 minutes at this pace.
+- *Old filings wait for spare capacity.* Rules read every PDF's subject line at no cost. Models then read the most important first, and only while most of the day's allowance is unused.
+
+**A weaker model gets stricter checks.** The first free-tier audit found 3 clearly wrong verdicts out of 8 on Dixon, and the second reading had agreed with all 3. So on the free tier a verdict stands only if a second reading explicitly agrees, evidence that only restates a plan ("trials will start") can't prove delivery, and a due date can't fall before the call that promised it. A free model also said a chairman and a new CFO weren't top executives, so code now decides that from the job title. The cost is fewer verdicts, and the app says when a company was read by a free model. See `docs/RESULTS.md`.
 
 **Sonnet over Opus for judgment.** `eval/bakeoff_judge.py` ran both over the same evidence for three companies. They agreed on 69 of 79 verdicts (87%), and neither was clearly better on the other 10, at about 40% of the cost. There's no ground truth for those 10, so this is a judgment call, and swapping is one environment variable.
 
@@ -75,4 +93,4 @@ A log of the calls that shaped FINN, including the ones real data overturned.
 
 ## Left out on purpose
 
-Portfolio P&L, logins, news and broker content, and a learning feed. Investor presentations are classified as filings but not analysed, because they're management's own framing and FINN tests management against filed numbers. Pledging and insider coverage is thin: NSE's pledge endpoint returned nothing, so both rely on filings, and few appeared for this portfolio.
+Portfolio P&L, logins, news and broker content, and a learning feed. Phone notifications, when turned on, still use closing prices and the default portfolio, because they run on the server, which doesn't hold anyone's list. Investor presentations are classified as filings but not analysed, because they're management's own framing and FINN tests management against filed numbers. Pledging and insider coverage is thin: NSE's pledge endpoint returned nothing, so both rely on filings, and few appeared for this portfolio.

@@ -10,10 +10,12 @@ import "./style.css";
 import { BriefScreen } from "./Brief";
 import { ChatScreen, alertsPath, type Alert } from "./Chat";
 import { ResearchScreen } from "./Research";
+import { SummaryScreen } from "./Summary";
 import { WatchScreen } from "./Watch";
-import { DEFAULT_SETTINGS, api, load, type Settings } from "./lib";
+import { DEFAULT_SETTINGS, api, load, mine, myHoldings, type Settings } from "./lib";
 
 type Tab = "brief" | "chat" | "research" | "watch";
+type Screen = Tab | "summary";
 
 const ICONS: Record<Tab, string> = {
   brief: "M5 6h14M5 12h14M5 18h9",
@@ -23,8 +25,9 @@ const ICONS: Record<Tab, string> = {
 };
 const TABS: [Tab, string, string][] = [["brief", "Brief", "/"], ["chat", "Chat", "/chat"], ["research", "Research", "/research"], ["watch", "Watch", "/watch"]];
 
-function route(): { tab: Tab; symbol: string | null } {
+function route(): { tab: Screen; symbol: string | null } {
   const [, a, b] = location.pathname.split("/");
+  if (a === "summary" && b) return { tab: "summary", symbol: b.toUpperCase() };
   if (a === "research") return { tab: "research", symbol: b ? b.toUpperCase() : null };
   if (a === "watch") return { tab: "watch", symbol: null };
   if (a === "chat") return { tab: "chat", symbol: null };
@@ -40,6 +43,14 @@ function App() {
     api<{ messages: Alert[] }>(alertsPath(settings))
       .then((a) => setUnread(!!a.messages[0] && a.messages[0].ts > load("finn.chat.seen", "")))
       .catch(() => {});
+    // A free host forgets what it was following when it restarts, so your own holdings remind it.
+    const held = myHoldings();
+    if (held) {
+      api<{ companies: { symbol: string }[] }>(mine("/api/portfolio")).then((p) => {
+        const known = new Set(p.companies.map((c) => c.symbol));
+        held.filter((s) => !known.has(s)).slice(0, 5).forEach((s) => api(`/api/track/${s}`, { method: "POST" }).catch(() => {}));
+      }).catch(() => {});
+    }
   }, []);
 
   useEffect(() => {
@@ -58,6 +69,7 @@ function App() {
     <>
       <main className="page">
         {r.tab === "brief" && <BriefScreen open={(s) => go(`/research/${s}`)} goChat={() => go("/chat")} />}
+        {r.tab === "summary" && <SummaryScreen symbol={r.symbol!} open={(s) => go(`/research/${s}`)} />}
         {r.tab === "research" && <ResearchScreen symbol={r.symbol} open={(s) => go(s ? `/research/${s}` : "/research")} />}
         {r.tab === "chat" && <ChatScreen open={(s) => go(`/research/${s}`)} onSeen={() => setUnread(false)} />}
         {r.tab === "watch" && <WatchScreen open={(s) => go(`/research/${s}`)} />}

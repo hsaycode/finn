@@ -6,29 +6,37 @@ All accuracy reviews below were done by Claude, the AI used to build FINN. No pe
 
 ## How much does each kind of filing matter?
 
-`eval/event_study.py` measures it. It takes every filing on NSE over 18 months, **280,486 filings at 2,284 companies across 492 trading days**, and asks whether the stock moved sharply on the first session that could react. A sharp move is more than 2 of the stock's own recent standard deviations, after removing the market's move. Each filing type is compared with the same stocks on days they filed nothing, when a sharp move happens 5.4% of the time.
+`eval/event_study.py` measures it. It takes every filing on NSE over 18 months, **280,528 filings, measured at the 2,284 companies with price history across 492 trading days**, and asks whether the stock moved sharply on the first session that could react. A sharp move is more than 2 of the stock's own recent standard deviations, after removing the market's move. Each filing type is compared with the same stocks on days they filed nothing, when a sharp move happens 5.4% of the time.
 
-The hand-set scores FINN started with only loosely tracked this (rank correlation 0.31 across 81 filing types), so they were replaced. Filings within a session of results are excluded, so they can't borrow the results' reaction.
+The hand-set scores FINN started with only loosely tracked this (rank correlation 0.30 across 87 filing types), so they were replaced. Filings within a session of results are excluded, so they can't borrow the results' reaction.
 
 | Filing type | Sharp move | Against a quiet day | Filings |
 |---|---|---|---|
 | Offer for sale | 35.8% | 6.7× | 53 |
-| Quarterly results | 27.7% | 5.2× | 13,133 |
-| Order wins | 11.7% | 2.2× | 2,042 |
-| A top executive leaving | 8.8% | 1.6× | 1,053 |
+| Quarterly results | 27.7% | 5.2× | 13,123 |
+| Press release about results | 21.3% | 4.0× | 268 |
+| Order wins | 11.7% | 2.2× | 2,037 |
+| Press release, general | 11.3% | 2.1× | 3,627 |
+| Press release on an order | 10.2% | 1.9× | 674 |
+| Press release on a deal | 8.9% | 1.7× | 906 |
+| A top executive leaving | 8.8% | 1.6× | 1,051 |
+| Press release on a product launch | 6.3% | 1.2× | 809 |
+| Press release on capacity or a plant | 5.7% | 1.1× | 407 |
 | Merger or scheme | 10.5% | 2.0× | 600 |
 | Insolvency or tribunal filings | 4.7% | 0.9× | 869 |
-| Newspaper ad copies | 5.8% | 1.1× | 17,867 |
+| Newspaper ad copies | 5.8% | 1.1× | 17,852 |
 
-**The test that counts:** ranks learned from the first year only, judged on the 73,367 filings of the last 26 weeks, which they never saw.
+**The test that counts:** ranks learned from the first year only, judged on the 72,721 filings of the last 26 weeks, which they never saw.
 
 | Tier | Old hand-set rules | Measured ranks |
 |---|---|---|
-| Top | 4.67× a quiet day | 5.00× |
-| Notable | 1.34× | 1.56× |
-| Routine | 1.15× | 1.10× |
+| Top | 4.66× a quiet day | 4.98× |
+| Notable | 1.34× | 1.55× |
+| Routine | 1.15× | 1.11× |
 
-Routine got quieter and notable got sharper. Leaving out results, the top tier reacts *less* than before (1.47× against 1.66×), because top-executive changes stay there on purpose.
+Routine got quieter and notable got sharper. Leaving out results, the top tier barely changes (1.68× against 1.65×), because top-executive changes stay there on purpose. Splitting press releases by content barely moved these totals (they were 5.00×, 1.56× and 1.10× before it). What it changed is which press releases an investor sees.
+
+One first attempt went wrong: the word "financial" in "financial services" labelled a Persistent partnership as results and sent it to the top tier. A check on real filings caught it, and the rule was tightened before the numbers above were measured.
 
 **Size matters too.** Among order wins with an amount in the filing's text, the largest third moved stocks sharply 18.5% of the time and the smallest third 3.1%, though that's only 195 filings.
 
@@ -48,7 +56,7 @@ Routine got quieter and notable got sharper. Leaving out results, the top tier r
 
 | Held-out set: 42 filings | First run, before any fix | Now, with measured ranks |
 |---|---|---|
-| Routine paperwork correctly buried | 28 of 28 | 27 of 28 |
+| Routine paperwork correctly buried | 28 of 28 | 28 of 28 |
 | Filings ranked top that deserved attention | 5 of 5 | 6 of 6 |
 | Important filings kept visible | 3 of 4 | 4 of 4 |
 
@@ -84,17 +92,17 @@ The first run of this check failed, and it was the most useful test in the proje
 
 | What | Checked | Failed |
 |---|---|---|
-| Filing headlines | 675 | 0 |
+| Filing headlines | 729 | 0 |
 | Promise summaries | 503 | 0 |
-| Filing details | 186 | 0 |
+| Filing details | 191 | 0 |
 | Bull and bear points | 137 | 0 |
+| A person's background | 131 | 0 |
 | Company KPIs | 122 | 0 |
-| A person's background | 111 | 0 |
-| Annual report notes | 41 | 2 |
+| Annual report notes | 40 | 1 |
 | Verdict notes | 37 | 0 |
 | Business descriptions | 22 | 0 |
 
-The last full run caught 2 annual report notes whose figures weren't on the cited page. Those two companies' dossiers were then rebuilt under a stricter rule that hides such notes, but this table wasn't rerun afterwards.
+This run, on 2026-11-03, includes the filings read by a free model. The one failure was JP Power's auditor note: its figure is real, but it's on page 35, not the cited page 33. The page was corrected directly in the stored dossier, and the table wasn't rerun afterwards. Code checks an auditor note's figure against the text the model read, not against its cited page, so a model can still get that page number wrong.
 
 **Limits:** a pass means no figure or name was invented. It can't prove a summary's meaning is fair, which is why sources stay one tap away.
 
@@ -118,8 +126,40 @@ The first audit's errors shared a cause: models read sentences without what came
 - Only the unseen-companies row is a clean test, and 7 verdicts is too few to show the error rate is low. Expect some wrong verdicts to remain.
 - Known flaws: Polycab's EHV plant shows the right verdict with a wrong due date (FY28 instead of December 2026), Dixon's FY26 capex is arguable, and one Dixon verdict may mix up two plants.
 - Grouping isn't perfect, so Dixon's 10 missed may count one project more than once.
-- Re-judging can change a verdict's wording or outcome, because models aren't fully repeatable. Dixon has read 2 of 14, 3 of 14 and now 3 of 15 across rebuilds.
+- Models aren't fully repeatable: Dixon read 2 of 14, 3 of 14 and 3 of 15 across rebuilds. Settled verdicts now stay put on a rebuild unless a new call changes them, which is unit-tested and hasn't yet been through a real new quarter.
 - Most statements stay unresolved: 193 "can't verify", 150 "too vague" and 120 "not due yet", against 40 settled. TCS, Titan, Reliance and HDFC Bank have no settled verdicts.
+
+## How good is the free tier?
+
+Everything shipped above was built with Claude. New companies and filings now use free models on Groq, so the same companies were rebuilt that way and compared, on a copy of the database.
+
+| Free-tier build | Time | Tokens | Promises found | Settled verdicts |
+|---|---|---|---|---|
+| Voltas, new to FINN | 5.5 min | about 38,000 | 7 | 0 |
+| Kaynes | 8 min | about 50,000 | 20, against Claude's 42 | 4, against Claude's 4 |
+| Dixon, the heaviest | 14 min | about 110,000 | 86, against Claude's 78 | 7, against Claude's 15 |
+
+The two research models have about 380,000 tokens a day between them, so that's **roughly 3 to 10 new companies a day** if nothing else needs them.
+
+**Verdicts, read by Claude against their evidence:**
+
+| Round | Model-made verdicts read | Result |
+|---|---|---|
+| First build, Kaynes and Voltas | 3 | At least 1 wrong: metering's *share* of revenue used as its *growth*. 1 more looks doubtful |
+| Harder thinking and a stricter second reading, Dixon | 8 | 3 clearly wrong, 1 arguable. All 3 had passed the second reading |
+| After code checks for those errors, Dixon and Kaynes | 7 | 0 clearly wrong, 1 doubtful (may mix up two Dixon projects), 1 right but on indirect evidence |
+
+Code-calculated verdicts weren't the problem: Kaynes's matched Claude's. The new checks caught none of the 12 Claude-made "delivered" verdicts or any shipped due date, so they don't misfire on good data.
+
+**Limits:**
+
+- **The last row isn't a clean test,** because the checks were written from these same companies. `eval/free_tier_audit.py` can run one on unseen companies, and that hasn't been done yet. Expect a higher error rate than Claude's.
+- FINN finds and settles less on the free tier. For Dixon it misses the ₹7,000 crore export target that Claude's build caught. It also overturned verdicts that Claude's record shows were right, such as Chennai's delay, so "can't verify" is more common.
+- A company read this way says so on its page. The 23 shipped dossiers remain Claude-built, and a verdict stands from one build to the next unless a new call changes it.
+
+**Filings:** rules read the subject lines of 1,128 older PDFs at no cost. A free model then read 48 of the highest-ranked, at about 2,400 tokens each, and 1,107 remain for later days. Of its 13 demotions from the top tier, some were wrong, including HDFC Bank's chairman resigning and Polycab's new CFO, so code now decides who counts as a top executive and keeps results filings as results. After that, 10 filings changed tier against the earlier ranking, and all 10 were read and look defensible. 56 PDFs couldn't be read, and those filings keep their rule-based rank.
+
+**Chat:** real questions through the app took about a second or less on Qwen and used about 600 tokens each. Chat runs separately, so research can't use up its allowance.
 
 ## Does it work on companies nobody prepared?
 
@@ -164,12 +204,15 @@ A copy built by following the Dockerfile's steps, with production dependencies a
 |---|---|
 | Reading a filing | about $0.0014 |
 | A new company's dossier | about $0.04 to $0.20, depending on how much it promises |
-| Everything spent building this, including rework, experiments and testing | about $10.60 across 1,898 model calls |
+| Everything spent building this, including rework, experiments and testing | about $10.60 across 1,898 model calls, through the Claude CLI |
+| Running it from now on | $0, on Groq's free tier |
 
-Figures come from the app's own ledger, as reported by the provider. Repeat runs on unchanged documents cost nothing because answers are cached. Spending has a daily ceiling, and chat has its own daily limit.
+Figures come from the app's own ledger, as reported by the provider. Repeat runs on unchanged documents use no tokens because answers are cached. The free tier has its own limits, described above, and chat has a daily limit too, since a public link can be asked anything.
 
 ## Software tests
 
-158 automated tests (`pytest tests`, with no network or model) and 22 browser checks at phone size (`tests/e2e.py`), run in Chromium, WebKit (Safari's engine) and Firefox. An accessibility scan found no serious issues in either theme, and phone-size checks ran from 320 to 768 pixels wide. Some inline source links are under 24 pixels tall, and a dossier takes about 5 seconds to open on simulated slow 4G. One Firefox run failed a click on the Brief, which took 3 dependent checks with it, and the next run passed in full. The cause wasn't found, so that may be an intermittent problem.
+209 automated tests (`pytest tests`, with no network or model) and 28 browser checks at phone size (`tests/e2e.py`), run in Chromium, WebKit (Safari's engine) and Firefox. An accessibility scan found no serious issues in either theme, and phone-size checks ran from 320 to 768 pixels wide. Some inline source links are under 24 pixels tall, and a dossier takes about 5 seconds to open on simulated slow 4G. One Firefox run failed a click on the Brief, which took 3 dependent checks with it, and the next run passed in full. The cause wasn't found, so that may be an intermittent problem.
 
-**Not tested:** phone notifications on a real phone (they're off by default, and the sending logic and its safeguards have unit tests only), Qwen on Groq with a real key, real calls to the Anthropic API (a local stub and the Claude CLI only), Gemini, the actual Docker build, whether NSE accepts requests from a cloud host, and use by real investors.
+**Not tested:** the "Moving now" banner appearing in a browser (the live endpoint was run against real quotes during market hours, and the banner itself wasn't checked), phone notifications on a real phone (they're off by default, and the sending logic and its safeguards have unit tests only), real calls to the Anthropic API (a local stub and the Claude CLI only), Gemini, the actual Docker build, whether NSE accepts requests from a cloud host, and use by real investors.
+
+**On a free host:** Render's free disk is wiped on each restart, so the app wakes with the shipped snapshot. Any company added, old filing read or day's usage counted since then is forgotten. Groq's own limits still apply, and FINN obeys its wait times when it's told to. Read older filings locally and commit the database to keep that work.

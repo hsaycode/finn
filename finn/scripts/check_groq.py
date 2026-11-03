@@ -24,7 +24,7 @@ from finn.store import db  # noqa: E402
 
 if not os.environ.get("GROQ_API_KEY"):
     sys.exit("No key found. Add GROQ_API_KEY=... to finn/.env, or set it in this terminal.")
-print(f"Chat uses: {llm.provider_for('ask_v1')}, model {llm._GROQ_MODEL}")
+print(f"Chat uses: {llm.provider_for('ask_v1')}, {llm.GROQ_POOLS['chat'][0]}. Research uses: {llm.provider()}, {llm.GROQ_POOLS[llm.CHEAP][0]} and {llm.GROQ_POOLS[llm.STRONG][0]}")
 try:
     start = time.time()
     llm.ask_json("chat_route_v1", llm.CHEAP, "Reply with JSON.", f'Return JSON: {{"ok": true}} {start}', max_tokens=40)
@@ -56,5 +56,5 @@ for question in [
     if r.get("table"):
         print(f"  [comparison of {', '.join(c['symbol'] for c in r['table']['columns'])}]")
 
-row = db().execute("SELECT COUNT(*) n, ROUND(SUM(cost_usd), 4) usd FROM llm_calls WHERE provider='groq'").fetchone()
-print(f"\n{row['n']} Groq calls, about ${row['usd']}")
+row = db().execute("SELECT COUNT(*) n, SUM(input_tokens + output_tokens) tokens FROM llm_calls WHERE provider='groq'").fetchone()
+print(f"\n{row['n']} Groq calls, {row['tokens']} tokens of today's free allowance")

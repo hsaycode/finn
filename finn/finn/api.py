@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -30,8 +31,24 @@ SYMBOL = re.compile(r"^[A-Z0-9&\-]{1,20}$")
 _jobs_lock = threading.Lock()
 _running: set[str] = set()
 # A big bank's annual reports peak near 470 MB, so on a 512 MB host new tickers build one at a time.
+MAX_HOLDINGS = 40
 _build_slots = threading.BoundedSemaphore(int(os.environ.get("FINN_BUILD_SLOTS", "1")))
 RETRY_INCOMPLETE_AFTER = 600
+
+
+def _holdings(symbols: str | None = None) -> list[str]:
+    """Whoever is asking's own holdings if they sent them, or else the default portfolio."""
+    if symbols:
+        chosen = [s.strip().upper() for s in symbols.split(",") if s.strip()][:MAX_HOLDINGS]
+        if not all(SYMBOL.match(s) for s in chosen):
+            raise HTTPException(400, "Those don't look like NSE tickers")
+        if chosen:
+            return chosen
+    return [r["symbol"] for r in db().execute("SELECT symbol FROM companies WHERE in_portfolio=1 ORDER BY symbol")]
+
+
+def _marks(items: list) -> str:
+    return ",".join("?" for _ in items)
 
 
 def _quarters(symbol: str) -> list[nse.Quarter]:
@@ -68,7 +85,7 @@ def _event(items: list[dict]) -> dict:
 
 
 @app.get("/api/brief")
-def brief(hours: int = Query(24, ge=1, le=24 * 60), since: str | None = None, until: str | None = None):
+def brief(hours: int = Query(24, ge=1, le=24 * 60), since: str | None = None, until: str | None = None, symbols: str | None = None):
     """Everything in the window, as ranked events. The hidden count is part of the product."""
     conn = db()
     for value in (since, until):
@@ -82,11 +99,12 @@ def brief(hours: int = Query(24, ge=1, le=24 * 60), since: str | None = None, un
     end = (f"{until}T23:59:59" if len(until) == 10 else until) if until else "9999"
     if end < start:
         raise HTTPException(422, "The start date is after the end date")
+    mine = _holdings(symbols)
     # Pull each thread whole, even if only its latest filing falls inside the window.
     rows = [dict(r) for r in conn.execute(
-        "SELECT f.* FROM filings f JOIN companies c ON c.symbol=f.symbol AND c.in_portfolio=1 "
-        "WHERE (f.ts>=? AND f.ts<=?) OR f.thread IN (SELECT thread FROM filings WHERE ts>=? AND ts<=? AND thread IS NOT NULL) ORDER BY f.ts DESC",
-        (start, end, start, end),
+        f"SELECT f.* FROM filings f WHERE f.symbol IN ({_marks(mine)}) "
+        "AND ((f.ts>=? AND f.ts<=?) OR f.thread IN (SELECT thread FROM filings WHERE ts>=? AND ts<=? AND thread IS NOT NULL)) ORDER BY f.ts DESC",
+        (*mine, start, end, start, end),
     )]
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -109,7 +127,7 @@ def brief(hours: int = Query(24, ge=1, le=24 * 60), since: str | None = None, un
     if not top:
         # A quiet weekend shouldn't look broken: show what last mattered instead of a blank screen.
         lead = conn.execute(
-            "SELECT f.id, f.thread FROM filings f JOIN companies c ON c.symbol=f.symbol AND c.in_portfolio=1 WHERE f.tier='top' ORDER BY f.ts DESC LIMIT 1"
+            f"SELECT f.id, f.thread FROM filings f WHERE f.symbol IN ({_marks(mine)}) AND f.tier='top' ORDER BY f.ts DESC LIMIT 1", mine
         ).fetchone()
         if lead:
             group = conn.execute("SELECT * FROM filings WHERE thread=?", (lead["thread"],)).fetchall() if lead["thread"] else conn.execute("SELECT * FROM filings WHERE id=?", (lead["id"],)).fetchall()
@@ -187,10 +205,11 @@ def _promise_check(event: dict) -> dict | None:
 
 
 @app.get("/api/portfolio")
-def portfolio():
+def portfolio(symbols: str | None = None):
     conn = db()
     out = []
-    for c in conn.execute("SELECT * FROM companies WHERE in_portfolio=1 ORDER BY symbol"):
+    mine = _holdings(symbols)
+    for c in conn.execute(f"SELECT * FROM companies WHERE symbol IN ({_marks(mine)}) ORDER BY symbol", mine):
         rows = [dict(r) for r in conn.execute("SELECT date, close, volume FROM prices WHERE symbol=? ORDER BY date", (c["symbol"],))]
         sig = prices.signals(rows)
         last = sig[-1] if sig else None
@@ -213,9 +232,14 @@ def get_research(symbol: str):
     if not SYMBOL.match(symbol):
         raise HTTPException(400, "That doesn't look like an NSE ticker")
     d = research.load(symbol)
+    job = db().execute("SELECT * FROM jobs WHERE symbol=?", (symbol,)).fetchone()
+    with _jobs_lock:
+        building = symbol in _running
+    # The numbers are up while the track record is read, so nobody waits on the free tier's pace.
+    if d and building and job and job["status"] == "running":
+        return {"status": "ready", "dossier": d, "working": job["step"]}
     if d and not _needs_rebuild(d):
         return {"status": "ready", "dossier": d}
-    job = db().execute("SELECT * FROM jobs WHERE symbol=?", (symbol,)).fetchone()
     # A finished job built the dossier that now needs rebuilding, so it says nothing about the rebuild.
     if not job or job["status"] == "ready":
         return {"status": "none"}
@@ -236,11 +260,14 @@ def get_research(symbol: str):
 def _built_without_model(dossier: dict) -> bool:
     """A dossier built with no model configured gets upgraded once a model is available."""
     pr = dossier.get("promises")
-    return bool(pr) and pr.get("model") is False
+    return bool(pr) and pr.get("model") is False and not dossier.get("numbers_first")
 
 
 def _needs_rebuild(dossier: dict) -> bool:
     if llm.available() and _built_without_model(dossier):
+        return True
+    # Its track record was still being read when the server stopped, or today's allowance ran out.
+    if dossier.get("numbers_first") and llm.available():
         return True
     # Something upstream failed during the build, which a later attempt may get past.
     age = (datetime.now() - datetime.fromisoformat(dossier["generated"])).total_seconds()
@@ -257,7 +284,17 @@ def _run_research(symbol: str) -> None:
     try:
         _set_job(symbol, "running", "Waiting for another company to finish")
         with _build_slots:
-            d = research.build(symbol, log=lambda step: _set_job(symbol, "running", step))
+            log = lambda step: _set_job(symbol, "running", step)
+            # On the free tier a track record takes minutes, so the numbers go up first.
+            if llm.frugal() and not research.load(symbol):
+                with llm.no_model():
+                    quick = research.build(symbol, log=log, quick=True)
+                research.save(symbol, {**quick, "numbers_first": True})
+                log("Reading the earnings calls")
+            d = research.build(symbol, log=log)
+        # If today's allowance ran out partway, it stays marked to finish later.
+        if d.get("promises") and d["promises"].get("model") is False:
+            d["numbers_first"] = True
         research.save(symbol, d)
         _set_job(symbol, "ready", "Done")
     except research.UnknownTicker:
@@ -387,10 +424,12 @@ def quote(symbol: str):
 
 
 @app.get("/api/quotes")
-def quotes():
+def quotes(symbols: str | None = None):
     """Every holding, for the Watch list. Quotes are cached for a minute, so this stays polite."""
     out = []
-    for c in db().execute("SELECT symbol, name FROM companies WHERE in_portfolio=1 ORDER BY symbol").fetchall():
+    mine = _holdings(symbols)
+    known = {r["symbol"]: r["name"] for r in db().execute(f"SELECT symbol, name FROM companies WHERE symbol IN ({_marks(mine)})", mine)}
+    for c in [{"symbol": s, "name": known.get(s, s)} for s in sorted(mine)]:
         q = prices.quote(c["symbol"])
         out.append({"symbol": c["symbol"], "name": c["name"], "price": q["price"] if q else None, "change_pct": q["change_pct"] if q else None, "as_of": q["as_of"] if q else None, "today": q["today"] if q else []})
     return {"quotes": out}
@@ -418,14 +457,83 @@ def compare(symbols: str = Query(..., min_length=1, max_length=80)):
     return research.compare(wanted)
 
 
+@app.get("/api/live")
+def live(move: float = Query(5, gt=0, le=50), vol: float = Query(2, gt=0, le=50), symbols: str | None = None):
+    """Holdings past your limits right now, on the latest quote against the last 20 sessions' volume. No model involved."""
+    conn = db()
+    out = []
+    mine = _holdings(symbols)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        quotes = list(pool.map(prices.quote, mine))
+    for sym, q in zip(mine, quotes):
+        if not q or q.get("change_pct") is None:
+            continue
+        recent = [r["volume"] for r in conn.execute("SELECT volume FROM prices WHERE symbol=? ORDER BY date DESC LIMIT 20", (sym,))]
+        vol_x = round(q["volume"] / (sum(recent) / len(recent)), 2) if q.get("volume") and len(recent) >= 20 and sum(recent) else None
+        if abs(q["change_pct"]) >= move or (vol_x or 0) >= vol:
+            out.append({"symbol": sym, "price": q["price"], "move_pct": q["change_pct"], "vol_x": vol_x, "as_of": q["as_of"]})
+    out.sort(key=lambda m: -abs(m["move_pct"]))
+    return {"moving": out}
+
+
+@app.get("/api/calendar")
+def calendar(symbols: str | None = None, days: int = Query(30, ge=1, le=120)):
+    """What's coming up across your holdings, from dates companies have announced to the exchange."""
+    conn = db()
+    mine = _holdings(symbols)
+    today = datetime.now().date()
+    last = (today + timedelta(days=days)).isoformat()
+    out = []
+    for r in conn.execute(f"SELECT * FROM events WHERE symbol IN ({_marks(mine)}) AND date>=? AND date<=? ORDER BY date, symbol", (*mine, today.isoformat(), last)):
+        event = dict(r)
+        if r["kind"] == "results":
+            event["due"] = _promises_due(r["symbol"], r["date"])
+        out.append(event)
+    return {"events": out}
+
+
+def _promises_due(symbol: str, meeting: str) -> list[str]:
+    """What this company promised for the quarter these results will cover, so you know what to look for."""
+    dossier = research.load(symbol)
+    claims = []
+    for p in ((dossier or {}).get("promises") or {}).get("promises", []):
+        due = promises.parse_period(p.get("period"))
+        if due and p["verdict"] == promises.NOT_DUE and due["end"] < meeting and (datetime.fromisoformat(meeting) - datetime.fromisoformat(due["end"])).days <= 100:
+            claims.append(p["claim"])
+    return claims[:3]
+
+
+@app.post("/api/track/{symbol}")
+def track(symbol: str):
+    """Follow a company someone added to their holdings. Its filings and prices arrive in the background."""
+    symbol = symbol.upper().strip()
+    if not SYMBOL.match(symbol):
+        raise HTTPException(400, "That doesn't look like an NSE ticker")
+    found = prices.listed(symbol)
+    if found is False:
+        raise HTTPException(404, f"Couldn't find {symbol} on NSE. Check the ticker.")
+    if found is None:
+        raise HTTPException(503, "Couldn't check that ticker just now. Try again in a minute.")
+
+    def follow():
+        try:
+            pipeline.track(symbol)
+        except Exception:
+            pass  # the next refresh tries again, because it's on the tracked list
+
+    threading.Thread(target=follow, daemon=True).start()
+    return {"status": "tracking", "symbol": symbol}
+
+
 @app.get("/api/alerts")
-def alerts(move: float = Query(5, gt=0, le=50), vol: float = Query(2, gt=0, le=50), muted: str = "", days: int = Query(14, ge=1, le=60)):
+def alerts(move: float = Query(5, gt=0, le=50), vol: float = Query(2, gt=0, le=50), muted: str = "", days: int = Query(14, ge=1, le=60), symbols: str | None = None):
     """The messages FINN would send you: filings that rank top, and sessions that crossed your limits, newest first."""
     conn = db()
     since = (datetime.now() - timedelta(days=days)).isoformat()
     off = {m for m in muted.split(",") if m}
     groups: dict[str, list[dict]] = defaultdict(list)
-    for r in conn.execute("SELECT f.* FROM filings f JOIN companies c ON c.symbol=f.symbol AND c.in_portfolio=1 WHERE f.ts>=?", (since,)):
+    mine = _holdings(symbols)
+    for r in conn.execute(f"SELECT f.* FROM filings f WHERE f.symbol IN ({_marks(mine)}) AND f.ts>=?", (*mine, since)):
         groups[r["thread"] or r["id"]].append(dict(r))
     out = []
     for g in groups.values():
@@ -441,8 +549,9 @@ def alerts(move: float = Query(5, gt=0, le=50), vol: float = Query(2, gt=0, le=5
                 text = f"{person['name']}, {person.get('role') or 'senior management'}" + (f". {earlier}" if earlier else "")
             out.append({"kind": "filing", "ts": e["ts"], "symbol": e["symbol"], "title": e["title"], "text": text, "url": e["pdf_url"], "label": e["category_label"], "tone": e["detail"].get("tone")})
     cutoff = since[:10]
-    for c in conn.execute("SELECT symbol FROM companies WHERE in_portfolio=1").fetchall():
-        rows = [dict(r) for r in conn.execute("SELECT date, close, volume FROM prices WHERE symbol=? ORDER BY date", (c["symbol"],))]
+    for sym in mine:
+        c = {"symbol": sym}
+        rows = [dict(r) for r in conn.execute("SELECT date, close, volume FROM prices WHERE symbol=? ORDER BY date", (sym,))]
         for s in prices.signals(rows)[-(days + 2):]:
             volume = s["vol_x"] if s["enough_history"] else None
             if s["date"] >= cutoff and (abs(s["move_pct"]) >= move or (volume or 0) >= vol):
@@ -453,10 +562,15 @@ def alerts(move: float = Query(5, gt=0, le=50), vol: float = Query(2, gt=0, le=5
 
 
 @app.post("/api/chat")
-def chat_message(message: str = Body(..., embed=True, min_length=1, max_length=400), move: float = Body(5, embed=True), vol: float = Body(2, embed=True)):
+def chat_message(
+    message: str = Body(..., embed=True, min_length=1, max_length=400), move: float = Body(5, embed=True), vol: float = Body(2, embed=True),
+    about: str | None = Body(None, embed=True, max_length=20), symbols: str | None = Body(None, embed=True, max_length=800),
+):
     def ask_about(symbol: str, question: str) -> dict:
         return ask(symbol, question if len(question) >= 3 else f"{question} ?")
-    return chat.answer(message, ask_about, move, vol)
+    if about and not SYMBOL.match(about.upper()):
+        about = None
+    return chat.answer(message, ask_about, move, vol, about.upper() if about else None, _holdings(symbols))
 
 
 @app.get("/api/push")

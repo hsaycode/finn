@@ -87,6 +87,8 @@ def enrich_pending(days: int = ENRICH_DAYS, symbols: list[str] | None = None, wo
     if symbols:
         rows = [r for r in rows if r["symbol"] in symbols]
     todo = [r for r in rows if C.classify(r["raw_category"], r["text"] or "").read_pdf]
+    if llm.frugal():
+        todo = todo[:15]  # the newest first, and the rest next time, so research keeps some allowance
     revenue = {r["symbol"]: r["ttm_revenue"] for r in conn.execute("SELECT symbol, ttm_revenue FROM companies")}
     log(f"enrich: {len(todo)} of {len(rows)} recent filings need their PDF read")
 
@@ -98,7 +100,7 @@ def enrich_pending(days: int = ENRICH_DAYS, symbols: list[str] | None = None, wo
 
     errors = 0
     # db() is per-thread, so model calls log safely from workers.
-    with ThreadPoolExecutor(max_workers=workers if llm.provider() else 2) as pool:
+    with ThreadPoolExecutor(max_workers=2 if llm.frugal() or not llm.provider() else workers) as pool:
         for i, (fid, out) in enumerate(pool.map(work, todo), 1):
             if "error" in out:
                 errors += 1
@@ -205,14 +207,84 @@ def thread_events(symbols: list[str] | None = None) -> None:
     conn.commit()
 
 
+def watched() -> list[str]:
+    """The default portfolio, plus whatever anyone has added to theirs."""
+    extra = [r["symbol"] for r in db().execute("SELECT symbol FROM tracked ORDER BY added DESC LIMIT 100")]
+    return PORTFOLIO + [s for s in extra if s not in PORTFOLIO]
+
+
+def track(symbol: str) -> None:
+    """Start following a company someone added to their holdings."""
+    conn = db()
+    conn.execute("INSERT OR REPLACE INTO tracked VALUES (?, ?)", (symbol, datetime.now().isoformat(timespec="seconds")))
+    conn.commit()
+    now = datetime.now()
+    refresh_company(symbol, in_portfolio=False)
+    refresh_prices(symbol)
+    ingest_filings(symbol, now - timedelta(days=60), now)
+    refresh_calendar([symbol])
+    thread_events([symbol])
+
+
+def refresh_calendar(symbols: list[str]) -> int:
+    conn = db()
+    count = 0
+    for sym in symbols:
+        try:
+            events = nse.upcoming_events(sym)
+        except (FetchError, ValueError, KeyError, TypeError):
+            continue  # keep what we had: dates a company has announced don't stop being true
+        conn.execute("DELETE FROM events WHERE symbol=? AND date>=?", (sym, datetime.now().date().isoformat()))
+        conn.executemany("INSERT OR REPLACE INTO events VALUES (:symbol, :date, :kind, :title)", events)
+        count += len(events)
+    conn.commit()
+    return count
+
+
+def read_backlog(limit: int = 20, model: bool = True, log=print) -> dict:
+    """Older filings that were only ranked from their title. Reads the most important first, so a day's
+    free allowance goes where it matters, and stops when it runs out. Safe to run again tomorrow."""
+    conn = db()
+    wanted = "enriched<2" if model else "enriched<1"
+    rows = [dict(r) for r in conn.execute(f"SELECT * FROM filings WHERE {wanted} ORDER BY score DESC, ts DESC")]
+    todo = [r for r in rows if C.classify(r["raw_category"], r["text"] or "").read_pdf][:limit]
+    revenue = {r["symbol"]: r["ttm_revenue"] for r in conn.execute("SELECT symbol, ttm_revenue FROM companies")}
+    done = 0
+
+    def read(row):
+        try:
+            return row["id"], E.enrich(row, revenue.get(row["symbol"]))
+        except Exception as e:  # one bad PDF must never stop the run
+            log(f"  ! {row['id']}: {type(e).__name__}")
+            return row["id"], None
+
+    for row in todo:
+        if model and llm.frugal() and not llm.available():
+            log("today's free allowance is used up; run again tomorrow")
+            break
+        if model:
+            fid, out = read(row)
+        else:
+            with llm.no_model():
+                fid, out = read(row)
+        if out:
+            # With no model, or none left, a filing keeps any earlier reading rather than going backwards.
+            enriched = max(out["enriched"], row["enriched"] or 0)
+            conn.execute("UPDATE filings SET category=?, score=?, tier=?, title=?, reason=?, detail=?, enriched=? WHERE id=?",
+                         (out["category"], out["score"], out["tier"], out["title"], out["reason"], json.dumps(out["detail"], ensure_ascii=False), enriched, fid))
+            conn.commit()
+            done += 1
+    return {"read": done, "remaining": len([r for r in rows if C.classify(r["raw_category"], r["text"] or "").read_pdf]) - done}
+
+
 def refresh(symbols: list[str] | None = None, days: int = 45, log=print) -> dict:
-    syms = symbols or PORTFOLIO
+    syms = symbols or watched()
     now = datetime.now()
     frm = now - timedelta(days=days)
     summary = {"new_filings": 0, "failed": []}
     for sym in syms:
         try:
-            refresh_company(sym)
+            refresh_company(sym, in_portfolio=sym in PORTFOLIO)
             refresh_prices(sym)
             n = ingest_filings(sym, frm, now)
             summary["new_filings"] += n
@@ -221,6 +293,10 @@ def refresh(symbols: list[str] | None = None, days: int = 45, log=print) -> dict
             summary["failed"].append(sym)
             log(f"{sym}: FAILED {str(e)[:160]}")
     summary.update(enrich_pending(days=min(days, ENRICH_DAYS), symbols=syms, log=log))
+    refresh_calendar(syms)
+    # Whatever the free allowance has left over goes to older filings, a little at a time.
+    if llm.frugal() and llm.free_room_share() > 0.6:
+        read_backlog(limit=5, log=log)
     thread_events(syms)
     # "Filings checked 2 minutes ago" has to be true, so a run that reached nothing doesn't count.
     if len(summary["failed"]) < len(syms):
@@ -231,9 +307,11 @@ def refresh(symbols: list[str] | None = None, days: int = 45, log=print) -> dict
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["refresh", "enrich", "thread", "reclassify", "rerank", "people"])
+    p.add_argument("command", choices=["refresh", "enrich", "thread", "reclassify", "rerank", "people", "backlog", "calendar"])
     p.add_argument("--days", type=int, default=45)
     p.add_argument("--symbols")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--rules-only", action="store_true")
     a = p.parse_args()
     symbols = a.symbols.split(",") if a.symbols else None
     try:
@@ -242,6 +320,11 @@ def main() -> None:
         elif a.command == "enrich":
             print(json.dumps(enrich_pending(a.days, symbols)))
             thread_events(symbols)
+        elif a.command == "backlog":
+            print(json.dumps(read_backlog(a.limit, model=not a.rules_only)))
+            thread_events(symbols)
+        elif a.command == "calendar":
+            print(refresh_calendar(symbols or watched()))
         elif a.command == "rerank":
             print(json.dumps(rerank()))
         elif a.command == "people":

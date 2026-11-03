@@ -53,6 +53,17 @@ def quote(symbol: str, ttl: float = 60) -> dict | None:
     }
 
 
+def listed(symbol: str) -> bool | None:
+    """Is this a real NSE ticker? None means Yahoo couldn't be asked, which says nothing about the ticker."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}.NS?range=1d&interval=1d"
+    try:
+        return bool(fetch_json(url, ttl=3600, retries=1)["chart"]["result"])
+    except FetchError as e:
+        return False if e.status == 404 else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def signals(rows: list[dict], window: int = 20) -> list[dict]:
     """Day move and volume multiple per session. The baseline excludes the day itself,
     otherwise a huge spike would inflate the average it's being compared with."""

@@ -6,10 +6,10 @@ A mobile-first financial investment agent for Indian equities, built for the ENA
 
 Open it on a phone and try:
 
-1. **Brief:** the filings that matter from the last 24 hours or any dates you pick, ranked by how such filings have actually moved stocks. Tick them off until it says "That's everything."
-2. **Chat:** your alerts, and questions answered from FINN's records. Try "Dixon's track record" or "Compare Dixon and Kaynes".
-3. **Research:** enter `KAYNES`. FY26 revenue was guided at ₹4,500 crore plus and came in at ₹3,626 crore, with the quote, page and filing one tap away. Then try a ticker of your own.
-4. **Watch:** live prices for your holdings. Move the limits and see how many alerts each setting would have sent over the last 30 sessions.
+1. **Brief:** the filings that matter from the last 24 hours or any dates you pick, ranked by how such filings have actually moved stocks, plus the board meetings and results coming up. Tick them off until it says "That's everything."
+2. **Chat:** your alerts, and questions answered from FINN's records. Try "Dixon's track record", then "and its results?". It remembers who you were talking about.
+3. **Research:** enter `KAYNES`. FY26 revenue was guided at ₹4,500 crore plus and came in at ₹3,626 crore, with the quote, page and filing one tap away. Open its one-page summary to print or share. Then try a ticker of your own: its numbers appear first, and its track record fills in behind them.
+4. **Watch:** live prices for your holdings, which you can edit. Move the limits and see how many alerts each setting would have sent over the last 30 sessions. While the market is open, the limits check live prices.
 
 ## What makes it different
 
@@ -27,16 +27,18 @@ Open it on a phone and try:
 ## How it works
 
 ```
-NSE filings ──> rules decide what's worth opening ──> Haiku reads those PDFs ──> rank against company size ──> Brief
+NSE filings ──> rules decide what's worth opening ──> a model reads those PDFs ──> rank against company size ──> Brief
 NSE XBRL ─────> code parses exact results ──────────> QoQ / YoY / one-off flags ─────────────────────────────> Results card
 Yahoo EOD ────> code computes moves and volume ─────> your limits ───────────────────────────────────────────> Alerts
 
-Transcripts ──> numbered sentences ──> filter to ~10% ──> Haiku picks commitments ──┐
+Transcripts ──> numbered sentences ──> filter to ~10% ──> a model picks commitments ─┐
 Filed results ──────────────────────────────────────────> code scores the financial ones ──> Track record
-Later calls ──────────────────────────> Sonnet judges the rest, a second pass reviews ─┘
+Later calls ──────────────────────> a model judges the rest, a second pass reviews ───┘
 
 All NSE filings + 2 years of prices ──> market study ──> measured rank for each filing type ──> Brief
 ```
+
+The shipped research was built with Claude Haiku and Sonnet. **New work needs only a free Groq key.** Requests are split and paced to the free limits, chat keeps a model to itself so research can't starve it, and when the day's allowance runs out FINN says so and carries on the next day.
 
 `docs/DECISIONS.md` explains the choices, including the ones real data overturned.
 
@@ -54,17 +56,15 @@ The repo ships a database with real data, so it works immediately with no keys. 
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Enables promise extraction for tickers not already in the database |
-| `GEMINI_API_KEY` | Free-tier alternative |
+| `GROQ_API_KEY` | The only key FINN needs, on Groq's free tier. Chat runs on `qwen/qwen3.8-27b`, filing reading on `openai/gpt-oss-20b` and judgment on `openai/gpt-oss-120b`. Change them with `FINN_GROQ_MODEL`, `FINN_GROQ_CHEAP` and `FINN_GROQ_STRONG` |
 | `FINN_REFRESH_MINUTES` | Keep filings fresh while the server runs (the Dockerfile sets 30) |
-| `GROQ_API_KEY` | Runs the Chat tab on `qwen/qwen3.8-27b` (a preview model on Groq; change it with `FINN_GROQ_MODEL`) |
-| `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` | Optional. Adds promise tracking on new tickers, and PDF reading on new filings |
+| `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` | Optional and never required. If set, research and filing reading use it instead of Groq, and chat stays on Groq |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_CONTACT` | Optional. Turns on phone notifications; make them with `uv run --extra push python scripts/vapid_keys.py` |
 | `FINN_CHAT_DAILY_LIMIT` | Chat model calls allowed per day (default 500), since a public link can be asked anything |
 | `FINN_BUILD_SLOTS` | New tickers researched at once (default 1, safe on 512 MB) |
-| `FINN_LLM_BUDGET_USD` | Hard daily ceiling on model spend (default 3) |
+| `FINN_LLM_BUDGET_USD` | Hard daily ceiling on model spend if a paid key is set (default 3) |
 
-Refresh data with `uv run python -m finn.pipeline refresh`.
+Refresh data with `uv run python -m finn.pipeline refresh`. Read older filings with `uv run python -m finn.pipeline backlog --limit 50`, most important first; run it again on another day to continue.
 
 **Deploy:** the `Dockerfile` builds a single image. Any Docker host works, such as Hugging Face Spaces (Docker) or Render. Set `PORT` if the host requires it.
 
@@ -80,6 +80,7 @@ uv run python eval/check_claims.py        # every model-written line against its
 uv run python eval/event_study.py report  # how each filing type moves stocks; run "fetch" first
 FINN_LLM=claude-cli uv run python eval/injection_test.py   # hostile transcripts, real model
 uv run python eval/bakeoff_judge.py       # Sonnet vs. Opus on judging promises
+uv run python eval/free_tier_audit.py VOLTAS   # free-tier verdicts with their evidence, to read
 FINN_LLM=none uv run python eval/sweep_tickers.py 40   # random tickers, no model cost
 ```
 
@@ -91,7 +92,7 @@ FINN_LLM=none uv run python eval/sweep_tickers.py 40   # random tickers, no mode
 finn/        nse (filings, XBRL)  screener  prices  docs (PDF text)  transcripts
              classify + enrich (the ranker)  promises (track record)  research (dossier)
              llm (routing, cache, spend ledger)  people  chat  pipeline  api
-web/         React PWA: Brief, Research, Watch
+web/         React PWA: Brief, Chat, Research, Watch, one-page Summary
 eval/        how the accuracy claims were measured
 tests/       unit, API and browser tests
 data/finn.db the snapshot the app ships with

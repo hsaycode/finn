@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { DEFAULT_SETTINGS, api, day, fromSource, load, marketMoment, save, signed, type Holding, type Pin, type Settings } from "./lib";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { DEFAULT_SETTINGS, MAX_HOLDINGS, api, day, fromSource, load, marketMoment, mine, myHoldings, save, signed, type Holding, type Pin, type Settings } from "./lib";
 import { SourceLink, Spark } from "./ui";
 
 const MUTABLE: [string, string][] = [
@@ -61,36 +61,82 @@ function PhoneAlerts({ settings }: { settings: Settings }) {
 
 interface Quote { symbol: string; name: string; price: number | null; change_pct: number | null; as_of: string | null; today: number[] }
 
-function LivePrices({ open }: { open: (s: string) => void }) {
+function LivePrices({ open, onChange, version }: { open: (s: string) => void; onChange: () => void; version: number }) {
   const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [ticker, setTicker] = useState("");
+  const [note, setNote] = useState("");
+  const [adding, setAdding] = useState(false);
+  const store = (next: string[] | null) => {
+    save("finn.holdings", next);
+    onChange();
+  };
+  const remove = (symbol: string) => {
+    setNote("");
+    store(quotes.map((q) => q.symbol).filter((s) => s !== symbol));
+  };
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    const symbol = ticker.trim().toUpperCase();
+    if (!symbol || adding) return;
+    if (quotes.some((q) => q.symbol === symbol)) {
+      setNote(`${symbol} is already on your list.`);
+      return;
+    }
+    setAdding(true);
+    setNote("");
+    try {
+      await api(`/api/track/${encodeURIComponent(symbol)}`, { method: "POST" });
+      store([...quotes.map((q) => q.symbol), symbol]);
+      setTicker("");
+      setNote(`Added ${symbol}. Its filings and price history arrive in a minute or two.`);
+    } catch (err) {
+      setNote(String(err).includes("404") ? `Couldn't find ${symbol} on NSE. Check the ticker.` : "Couldn't add that just now. Try again in a minute.");
+    }
+    setAdding(false);
+  };
   useEffect(() => {
     let alive = true;
-    const pull = () => api<{ quotes: Quote[] }>("/api/quotes").then((r) => alive && setQuotes(r.quotes)).catch(() => {});
+    const pull = () => api<{ quotes: Quote[] }>(mine("/api/quotes")).then((r) => alive && setQuotes(r.quotes)).catch(() => {});
     pull();
     const timer = marketMoment().label === "Market open" ? window.setInterval(pull, 60000) : undefined;
     return () => {
       alive = false;
       clearInterval(timer);
     };
-  }, []);
+  }, [version]);
   const asOf = quotes.find((q) => q.as_of)?.as_of;
   return (
     <section className="sec sec-first" aria-label="Your holdings">
-      <h2>Your holdings</h2>
+      <div className="sec-head">
+        <h2>Your holdings</h2>
+        <button className="link" aria-pressed={editing} onClick={() => { setEditing(!editing); setNote(""); }}>{editing ? "Done" : "Edit"}</button>
+      </div>
+      {editing && (
+        <form className="ask add-holding" onSubmit={add}>
+          <label className="sr" htmlFor="holding">NSE ticker to add</label>
+          <input id="holding" value={ticker} autoCapitalize="characters" autoCorrect="off" spellCheck={false} onChange={(e) => setTicker(e.target.value)} placeholder="Add an NSE ticker" />
+          <button className="primary" disabled={adding || !ticker.trim() || quotes.length >= MAX_HOLDINGS}>{adding ? "Checking" : "Add"}</button>
+        </form>
+      )}
+      {note && <p className="meta" role="status">{note}</p>}
       {quotes.length === 0 ? <div className="skeleton skeleton-card" aria-hidden="true" /> : (
         <ul className="quotes">
           {quotes.map((q) => (
-            <li key={q.symbol}>
+            <li key={q.symbol} className={editing ? "quote-editing" : ""}>
               <button className="quote-row" onClick={() => open(q.symbol)}>
                 <span className="ticker-plain">{q.symbol}</span>
                 <Spark values={q.today} up={(q.change_pct ?? 0) >= 0} />
                 <span className="num quote-price">{q.price === null ? "–" : `₹${q.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`}</span>
                 <span className={`num quote-change ${(q.change_pct ?? 0) >= 0 ? "up" : "down"}`}>{q.change_pct === null ? "–" : signed(q.change_pct, 2)}</span>
               </button>
+              {editing && quotes.length > 1 && <button className="link" aria-label={`Remove ${q.symbol}`} onClick={() => remove(q.symbol)}>Remove</button>}
             </li>
           ))}
         </ul>
       )}
+      {editing && myHoldings() && <button className="link widen" onClick={() => { store(null); setNote(""); }}>Back to the default list</button>}
+      {editing && <p className="meta">Up to {MAX_HOLDINGS} companies. Your list stays on this device.</p>}
       {asOf && <p className="meta num">As of {asOf}. Yahoo Finance prices can be delayed, so check your broker before you trade.</p>}
     </section>
   );
@@ -111,14 +157,15 @@ function hits(holdings: Holding[], volX: number, movePct: number): Hit[] {
 export function WatchScreen({ open }: { open: (s: string) => void }) {
   const [settings, setSettings] = useState<Settings>(() => ({ ...DEFAULT_SETTINGS, ...load<Partial<Settings>>("finn.settings", {}) }));
   const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [version, setVersion] = useState(0);
   const [pins, setPins] = useState<Pin[]>(() => load("finn.pins", []));
 
   const [status, setStatus] = useState<{ filings: number; llm_calls: number; llm_usd: number; model: string | null } | null>(null);
 
   useEffect(() => {
-    api<{ companies: Holding[] }>("/api/portfolio").then((p) => setHoldings(p.companies)).catch(() => {});
+    api<{ companies: Holding[] }>(mine("/api/portfolio")).then((p) => setHoldings(p.companies)).catch(() => {});
     api<any>("/api/status").then(setStatus).catch(() => {});
-  }, []);
+  }, [version]);
 
   const update = (patch: Partial<Settings>) => {
     const next = { ...settings, ...patch };
@@ -136,7 +183,7 @@ export function WatchScreen({ open }: { open: (s: string) => void }) {
         <p className="moment">Live prices for your holdings, and the limits that decide what interrupts you.</p>
       </header>
 
-      <LivePrices open={open} />
+      <LivePrices open={open} version={version} onChange={() => setVersion((v) => v + 1)} />
 
       <section className="sec" aria-label="Alert limits">
         <h2>Your limits</h2>
@@ -168,7 +215,7 @@ export function WatchScreen({ open }: { open: (s: string) => void }) {
             ))}
           </ul>
         )}
-        <p className="meta">Limits use closing prices, so these fire after the close. They land in the Chat tab, along with filings as they rank.</p>
+        <p className="meta">While the market is open and FINN is on your screen, your limits check the latest prices every 5 minutes. This history uses closing prices, and past alerts land in the Chat tab along with filings as they rank.</p>
       </section>
 
       <PhoneAlerts settings={settings} />

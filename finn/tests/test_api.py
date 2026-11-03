@@ -462,3 +462,119 @@ def test_a_phone_that_has_gone_is_forgotten(phones):
     db().commit()
     push.send_new(lambda *a: [{"ts": "2026-02-02T10:00:00", "symbol": "A", "title": "x", "text": "y"}], lambda *a: 410)
     assert db().execute("SELECT COUNT(*) n FROM push_subs").fetchone()["n"] == 0
+
+
+def _dossier_for(sym):
+    research.save(sym, {"symbol": sym, "name": sym, "generated": "2026-01-01", "snapshot": {}, "promises": {"testable": 2, "promises": [], "tally": {"delivered": 1, "partly": 0, "missed": 1}, "calls": []}})
+
+
+def test_chat_remembers_the_company_for_a_followup():
+    _dossier_for("AAA")
+    db().execute("INSERT OR REPLACE INTO companies (symbol,name,in_portfolio) VALUES ('AAA','Aaa Ltd',1)")
+    db().commit()
+    first = client.post("/api/chat", json={"message": "AAA track record"}).json()
+    assert first["about"] == "AAA"
+    again = client.post("/api/chat", json={"message": "and its promises?", "about": first["about"]}).json()
+    assert "kept 1 of 2" in again["text"] and again["about"] == "AAA"
+
+
+def test_a_portfolio_question_isnt_taken_as_a_followup():
+    add("x", "AAA", 2, 90, "Important", "orders")
+    r = client.post("/api/chat", json={"message": "what matters in my portfolio today", "about": "ZZZ"}).json()
+    assert r["items"] and "ZZZ" not in r["text"]
+
+
+def test_compare_with_one_name_uses_the_company_you_were_on():
+    _dossier_for("AAA")
+    _dossier_for("BBB")
+    db().execute("INSERT OR REPLACE INTO companies (symbol,name) VALUES ('BBB','Bbb Ltd')")
+    db().commit()
+    r = client.post("/api/chat", json={"message": "compare with BBB", "about": "AAA"}).json()
+    assert [c["symbol"] for c in r["table"]["columns"]] == ["AAA", "BBB"]
+
+
+def test_two_names_with_no_question_is_a_comparison():
+    _dossier_for("AAA")
+    _dossier_for("BBB")
+    db().execute("INSERT OR REPLACE INTO companies (symbol,name) VALUES ('BBB','Bbb Ltd')")
+    db().commit()
+    r = client.post("/api/chat", json={"message": "put AAA next to BBB for me"}).json()
+    assert [c["symbol"] for c in r["table"]["columns"]] == ["AAA", "BBB"]
+
+
+def test_each_person_sees_their_own_holdings():
+    add("a", "AAA", 2, 90, "Held")
+    db().execute("INSERT OR REPLACE INTO companies (symbol,name) VALUES ('MINE','Mine Ltd')")
+    db().commit()
+    add("m", "MINE", 2, 90, "Mine only")
+    assert [e["title"] for e in client.get("/api/brief?symbols=MINE").json()["top"]] == ["Mine only"]
+    assert [e["title"] for e in client.get("/api/brief").json()["top"]] == ["Held"]
+    assert [m["symbol"] for m in client.get("/api/alerts?symbols=MINE").json()["messages"]] == ["MINE"]
+    assert client.get("/api/brief?symbols=bad!name").status_code == 400
+
+
+def test_adding_a_holding_needs_a_real_ticker(monkeypatch):
+    monkeypatch.setattr(api.prices, "listed", lambda s: False)
+    assert client.post("/api/track/NOSUCHCO").status_code == 404
+    # Yahoo being down says nothing about the ticker.
+    monkeypatch.setattr(api.prices, "listed", lambda s: None)
+    assert client.post("/api/track/VOLTAS").status_code == 503
+    started = []
+    monkeypatch.setattr(api.prices, "listed", lambda s: True)
+    monkeypatch.setattr(api.pipeline, "track", started.append)
+    assert client.post("/api/track/voltas").json()["symbol"] == "VOLTAS"
+
+
+def test_live_limits_use_the_latest_quote(monkeypatch):
+    db().execute("DELETE FROM prices")
+    for i in range(20):
+        db().execute("INSERT INTO prices VALUES ('AAA', ?, 100, 1000)", (f"2026-01-{i + 1:02d}",))
+    db().commit()
+    monkeypatch.setattr(api.prices, "quote", lambda s: {"price": 110, "change_pct": 10.0, "volume": 3000, "as_of": "now"})
+    m = client.get("/api/live?move=5&vol=2").json()["moving"]
+    assert m[0]["symbol"] == "AAA" and m[0]["vol_x"] == 3.0
+    assert client.get("/api/live?move=20&vol=9").json()["moving"] == []
+
+
+def test_the_calendar_shows_whats_announced_and_what_was_promised_for_it():
+    soon = (datetime.now() + timedelta(days=5)).date().isoformat()
+    past = (datetime.now() - timedelta(days=5)).date().isoformat()
+    db().execute("DELETE FROM events")
+    db().execute("INSERT INTO events VALUES ('AAA', ?, 'results', 'Results due: board meets')", (soon,))
+    db().execute("INSERT INTO events VALUES ('AAA', ?, 'board', 'Old meeting')", (past,))
+    db().commit()
+    # The quarter that ended most recently is what a meeting a few days from now will report.
+    from finn import transcripts as T
+
+    today = datetime.now().date().isoformat()
+    ends = [(q, fy, T.fy_quarter_end(q, fy)) for fy in range(20, 40) for q in range(1, 5)]
+    q, fy, _ = max((e for e in ends if e[2] < today), key=lambda e: e[2])
+    research.save("AAA", {"symbol": "AAA", "name": "A", "generated": "2026-01-01", "promises": {"promises": [
+        {"period": f"Q{q} FY{fy}", "verdict": "not_due", "claim": "Margin at 12%"},
+        {"period": "FY39", "verdict": "not_due", "claim": "Far away"},
+    ]}})
+    events = client.get("/api/calendar").json()["events"]
+    assert [e["title"] for e in events] == ["Results due: board meets"]
+    assert events[0]["due"] == ["Margin at 12%"]
+
+
+def test_a_new_company_shows_numbers_while_its_record_is_read(monkeypatch):
+    from finn import llm
+
+    db().execute("DELETE FROM dossiers")
+    db().execute("DELETE FROM jobs")
+    db().commit()
+    seen = []
+
+    def build(symbol, log=lambda *_: None, quick=False):
+        seen.append((quick, llm.provider()))
+        return {"symbol": symbol, "name": symbol, "generated": datetime.now().isoformat(), "promises": {"model": True, "promises": []}}
+
+    monkeypatch.setattr(research, "build", build)
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.delenv("FINN_LLM", raising=False)
+    monkeypatch.setattr(llm, "frugal", lambda: True)
+    api._running.add("AAA")
+    api._run_research("AAA")
+    assert seen == [(True, None), (False, "groq")]
+    assert not research.load("AAA").get("numbers_first")

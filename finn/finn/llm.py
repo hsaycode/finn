@@ -14,7 +14,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
+from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 
 from .store import db
@@ -27,10 +30,25 @@ STRONG = "strong"
 _ANTHROPIC = {CHEAP: os.environ.get("FINN_CHEAP_MODEL", "claude-haiku-5-5"), STRONG: os.environ.get("FINN_STRONG_MODEL", "claude-sonnet-5-5")}
 _GEMINI = {CHEAP: os.environ.get("FINN_GEMINI_CHEAP", "gemini-2.5-flash-lite"), STRONG: os.environ.get("FINN_GEMINI_STRONG", "gemini-2.5-flash")}
 _CLI = {CHEAP: "haiku", STRONG: os.environ.get("FINN_STRONG_CLI", "sonnet")}
-_GROQ_MODEL = os.environ.get("FINN_GROQ_MODEL", "qwen/qwen3.8-27b")
 _GROQ_URL = os.environ.get("FINN_GROQ_URL", "https://api.groq.com/openai/v1/chat/completions")
-# Only the chat window uses Groq. The rest of the app stays on the models its accuracy was measured with.
 CHAT_TASKS = {"ask_v1", "chat_route_v1"}
+# Groq's free limits are per model, so each job gets its own. Chat keeps Qwen to itself, and research
+# can't use it up. A later name in a list is the overflow when the first is out of room.
+GROQ_POOLS = {
+    "chat": [os.environ.get("FINN_GROQ_MODEL", "qwen/qwen3.8-27b"), "openai/gpt-oss-20b"],
+    CHEAP: [os.environ.get("FINN_GROQ_CHEAP", "openai/gpt-oss-20b"), "openai/gpt-oss-120b"],
+    STRONG: [os.environ.get("FINN_GROQ_STRONG", "openai/gpt-oss-120b"), "openai/gpt-oss-20b"],
+}
+# Per model, as Groq's free tier reports them. Stopping short of the daily limits leaves room for error.
+FREE_TOKENS_PER_MINUTE = int(os.environ.get("FINN_GROQ_TPM", "8000"))
+FREE_REQUESTS_PER_MINUTE = 30
+FREE_TOKENS_PER_DAY = int(os.environ.get("FINN_GROQ_TPD", "190000"))
+FREE_REQUESTS_PER_DAY = 950
+CHARS_PER_TOKEN = 3.0
+# Largest source text in one request on the free tier, leaving room for instructions and the reply.
+FREE_SOURCE_CHARS = 11000
+CHAT_PATIENCE_SECONDS = 8
+BACKGROUND_PATIENCE_SECONDS = 180
 # A public link can be asked anything, so chat has its own daily limit on top of the spending ceiling.
 CHAT_DAILY_LIMIT = int(os.environ.get("FINN_CHAT_DAILY_LIMIT", "500"))
 # USD per million tokens, first-party rates.
@@ -53,7 +71,22 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+_local = threading.local()
+
+
+@contextmanager
+def no_model():
+    """Everything in this block runs as if no model were configured, so numbers can be shown straight away."""
+    _local.off = True
+    try:
+        yield
+    finally:
+        _local.off = False
+
+
 def provider() -> str | None:
+    if getattr(_local, "off", False):
+        return None
     forced = os.environ.get("FINN_LLM")
     if forced:
         return None if forced == "none" else forced
@@ -61,11 +94,22 @@ def provider() -> str | None:
         return "anthropic"
     if os.environ.get("GEMINI_API_KEY"):
         return "gemini"
+    if os.environ.get("GROQ_API_KEY"):
+        return "groq"
     return None
 
 
+def frugal() -> bool:
+    """True on Groq's free tier, where requests must be small and work has to be rationed."""
+    return provider() == "groq"
+
+
+def source_chars(wanted: int, frugal_size: int = FREE_SOURCE_CHARS) -> int:
+    return min(wanted, frugal_size) if frugal() else wanted
+
+
 def provider_for(task: str) -> str | None:
-    if os.environ.get("FINN_LLM") == "none":
+    if os.environ.get("FINN_LLM") == "none" or getattr(_local, "off", False):
         return None
     if task in CHAT_TASKS and os.environ.get("GROQ_API_KEY"):
         return "groq"
@@ -79,7 +123,67 @@ def chat_calls_today() -> int:
 
 
 def available() -> bool:
-    return provider() is not None and spent_today() < BUDGET_USD
+    p = provider()
+    if p == "groq":
+        return any(_groq_room(m) > 0 for m in GROQ_POOLS[CHEAP])
+    return p is not None and spent_today() < BUDGET_USD
+
+
+def _groq_today(model: str) -> tuple[int, int]:
+    today = datetime.now().date().isoformat()
+    r = db().execute(
+        "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) tokens, COUNT(*) calls FROM llm_calls WHERE provider='groq' AND model=? AND ts>=?", (model, today)
+    ).fetchone()
+    return r["tokens"], r["calls"]
+
+
+def _groq_room(model: str) -> int:
+    """Tokens this model can still use today."""
+    tokens, calls = _groq_today(model)
+    return 0 if calls >= FREE_REQUESTS_PER_DAY else max(0, FREE_TOKENS_PER_DAY - tokens)
+
+
+def free_room_share(tier: str = CHEAP) -> float:
+    """How much of today's free allowance is left for this kind of work, from 0 to 1."""
+    models = GROQ_POOLS[tier]
+    return sum(_groq_room(m) for m in models) / max(1, FREE_TOKENS_PER_DAY * len(models))
+
+
+_gate_lock = threading.Lock()
+_recent: dict[str, deque] = {}
+_blocked_until: dict[str, float] = {}
+
+
+def _reset_gate() -> None:
+    with _gate_lock:
+        _recent.clear()
+        _blocked_until.clear()
+
+
+def _take_slot(models: list[str], need: int, patience: float) -> str:
+    """Wait for a model with room this minute. Raises BudgetExceeded once today's allowance is gone."""
+    deadline = time.monotonic() + patience
+    while True:
+        wait = None
+        for model in models:
+            if _groq_room(model) < need:
+                continue
+            with _gate_lock:
+                now = time.monotonic()
+                window = _recent.setdefault(model, deque())
+                while window and now - window[0][0] >= 60:
+                    window.popleft()
+                used = sum(t for _, t in window)
+                if now >= _blocked_until.get(model, 0) and used + need <= FREE_TOKENS_PER_MINUTE and len(window) < FREE_REQUESTS_PER_MINUTE:
+                    window.append((now, need))
+                    return model
+                free_at = max(_blocked_until.get(model, 0), window[0][0] + 60 if window else now)
+                wait = min(wait, free_at - now) if wait is not None else free_at - now
+        if wait is None:
+            raise BudgetExceeded("today's free model allowance is used up")
+        if time.monotonic() + wait > deadline:
+            raise ValueError("the free model is busy just now")
+        time.sleep(max(0.2, min(wait, 5)))
 
 
 def spent_usd() -> float:
@@ -105,7 +209,7 @@ def ask_json(task: str, tier: str, system: str, prompt: str, *, schema: dict | N
     """Returns parsed JSON. Raises NoModel when nothing is configured and the answer isn't cached."""
     hit = cached(task, tier, system, prompt)
     if hit is not None:
-        return hit
+        return _as_asked(hit, prompt)
     p = provider_for(task)
     if p is None:
         raise NoModel(task)
@@ -118,8 +222,10 @@ def ask_json(task: str, tier: str, system: str, prompt: str, *, schema: dict | N
     start = time.monotonic()
     call = {"anthropic": _anthropic, "gemini": _gemini, "claude-cli": _claude_cli, "groq": _groq}[p]
     try:
-        text, model, tokens_in, tokens_out, cost = call(tier, full_system, prompt, schema, max_tokens)
-    except NoModel:
+        # Chat has someone waiting. Research runs in the background and can wait its turn.
+        route = "chat" if p == "groq" and task in CHAT_TASKS else tier
+        text, model, tokens_in, tokens_out, cost = call(route, full_system, prompt, schema, max_tokens)
+    except (NoModel, BudgetExceeded):
         raise
     except Exception as e:  # a bad key or an outage: callers already treat ValueError as "no answer"
         raise ValueError(f"{p} call failed: {type(e).__name__}") from e
@@ -135,7 +241,25 @@ def ask_json(task: str, tier: str, system: str, prompt: str, *, schema: dict | N
         (_key(task, tier, system, prompt), task, json.dumps(parsed, ensure_ascii=False)),
     )
     conn.commit()
-    return parsed
+    return _as_asked(parsed, prompt)
+
+
+def _as_asked(parsed, prompt: str):
+    """JSON mode only allows an object, so a list can come back wrapped under any name, or as its one element."""
+    if not isinstance(parsed, dict) or "JSON array" not in prompt and set(parsed) != {"items"}:
+        return parsed
+    lists = [v for v in parsed.values() if isinstance(v, list)]
+    return lists[0] if len(lists) == 1 else [parsed] if parsed else []
+
+
+def _failed_generation(response) -> str | None:
+    """Groq refuses a reply that isn't a JSON object, even a valid "[]". It still says what the model wrote."""
+    try:
+        text = response.json()["error"]["failed_generation"]
+        _parse(text)
+        return text
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def _parse(text: str):
@@ -196,28 +320,63 @@ def _gemini(tier, system, prompt, schema, max_tokens):
     return text, model, u.get("promptTokenCount", 0), u.get("candidatesTokenCount", 0), 0.0
 
 
-def _groq(tier, system, prompt, schema, max_tokens):
-    """Groq's OpenAI-style endpoint. Reasoning stays hidden, because JSON mode requires it and only the answer is used."""
+def _groq_settings(model: str, route: str = CHEAP) -> dict:
+    """Reasoning stays hidden, because JSON mode requires it and only the answer is used. Most of these
+    jobs are short picks from text they're given, so low effort saves free tokens. Judging a promise isn't,
+    and low effort is where the free model got verdicts wrong."""
+    if "qwen" in model:
+        return {"reasoning_format": "hidden", "reasoning_effort": os.environ.get("FINN_GROQ_EFFORT", "none")}
+    return {"reasoning_effort": "medium" if route == STRONG else "low", "include_reasoning": False}
+
+
+def _groq(route, system, prompt, schema, max_tokens):
+    """Groq's OpenAI-style endpoint, kept inside the free tier's limits per model."""
     from .net import client
 
-    body = {
-        "model": _GROQ_MODEL, "max_completion_tokens": max_tokens, "temperature": 0.1,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        "response_format": {"type": "json_object"}, "reasoning_format": "hidden",
-        # Every chat answer is a short pick from text it's given, so reasoning would only add cost and delay.
-        "reasoning_effort": os.environ.get("FINN_GROQ_EFFORT", "none"),
-    }
+    system = f"{system}\nIn JSON mode, return any list as {{\"items\": [...]}}, even when it's empty or has one element."
+    tokens_in_guess = int((len(system) + len(prompt)) / CHARS_PER_TOKEN)
+    if tokens_in_guess + 200 > FREE_TOKENS_PER_MINUTE:
+        raise ValueError("request too large for the free tier")
+    # Hidden reasoning counts against the reply's budget, and harder thinking could otherwise use all of it.
+    if route == STRONG:
+        max_tokens += 1500
+    max_tokens = min(max_tokens, FREE_TOKENS_PER_MINUTE - tokens_in_guess - 100)
+    need = tokens_in_guess + max_tokens // 2
+    patience = CHAT_PATIENCE_SECONDS if route == "chat" else BACKGROUND_PATIENCE_SECONDS
     headers = {"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"}
-    r = client().post(_GROQ_URL, headers=headers, json=body, timeout=60)
-    if r.status_code == 400:
-        # This model is in preview, so a setting can stop being accepted. The answer matters more than the setting.
-        r = client().post(_GROQ_URL, headers=headers, json={k: v for k, v in body.items() if k != "reasoning_effort"}, timeout=60)
+    r = None
+    for _ in range(4):
+        model = _take_slot(GROQ_POOLS[route], need, patience)
+        body = {
+            "model": model, "max_completion_tokens": max_tokens, "temperature": 0.1,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"}, **_groq_settings(model, route),
+        }
+        r = client().post(_GROQ_URL, headers=headers, json=body, timeout=90)
+        if r.status_code == 429:
+            # Groq says how long to wait. Another model may have room in the meantime.
+            with _gate_lock:
+                _blocked_until[model] = time.monotonic() + float(r.headers.get("retry-after") or 30)
+            continue
+        if r.status_code == 400:
+            written = _failed_generation(r)
+            if written:
+                return written, model, 0, 0, 0.0
+            # A preview model can stop accepting a setting, and a reply can run out of room or
+            # miss JSON mode. The answer matters more than either, and _parse can find it in plain text.
+            plain = {k: v for k, v in body.items() if k not in _groq_settings(model, route)}
+            r = client().post(_GROQ_URL, headers=headers, json=plain, timeout=90)
+            if r.status_code == 400:
+                r = client().post(_GROQ_URL, headers=headers, json={k: v for k, v in plain.items() if k != "response_format"}, timeout=90)
+        r.raise_for_status()
+        d = r.json()
+        u = d.get("usage", {})
+        tokens_in, tokens_out = u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
+        # Free-tier calls cost nothing. A paid key can set this to keep the ledger honest.
+        i, o = _PRICE.get(model, (0, 0)) if os.environ.get("FINN_GROQ_PAID") else (0, 0)
+        return d["choices"][0]["message"]["content"], model, tokens_in, tokens_out, (tokens_in * i + tokens_out * o) / 1e6
     r.raise_for_status()
-    d = r.json()
-    u = d.get("usage", {})
-    tokens_in, tokens_out = u.get("prompt_tokens", 0), u.get("completion_tokens", 0)
-    price_in, price_out = _PRICE.get(_GROQ_MODEL, (0, 0))
-    return d["choices"][0]["message"]["content"], _GROQ_MODEL, tokens_in, tokens_out, (tokens_in * price_in + tokens_out * price_out) / 1e6
+    raise ValueError("the free model is busy just now")
 
 
 def _claude_cli(tier, system, prompt, schema, max_tokens):

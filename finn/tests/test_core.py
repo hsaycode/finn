@@ -695,3 +695,146 @@ def test_a_dotenv_file_fills_gaps_but_never_overrides(tmp_path, monkeypatch):
     assert os.environ["FINN_TEST_A"] == "from file" and os.environ["FINN_TEST_B"] == "b" and os.environ["FINN_TEST_C"] == "real"
     for name in ("FINN_TEST_A", "FINN_TEST_B"):
         os.environ.pop(name, None)
+
+
+def _was_settled(claim, quote, verdict, label="Q1 FY26", evidence_call="Q2 FY26"):
+    return {"claim": claim, "quote": quote, "verdict": verdict, "note": verdict, "call_label": label, "said_period": "2025-06-30", "evidence": {"call_label": evidence_call, "quote": "e"}}
+
+
+def _record(promises, calls=("Q2 FY26", "Q1 FY26")):
+    return {"promises": promises, "calls": [{"label": c} for c in calls], "tally": {}, "testable": 0}
+
+
+def test_a_settled_verdict_survives_a_rebuild():
+    old = _record([_was_settled("Plant by March", "The plant opens by March.", "missed")])
+    new = _record([_was_settled("Plant by March 2026", "The plant opens by March.", "delivered")])
+    out = P.keep_settled(new, {"promises": old})
+    assert out["promises"][0]["verdict"] == "missed" and out["tally"]["missed"] == 1 and out["testable"] == 1
+
+
+def test_new_evidence_from_a_new_call_can_change_a_verdict():
+    old = _record([_was_settled("Plant by March", "The plant opens by March.", "missed")])
+    new = _record([_was_settled("Plant by March", "The plant opens by March.", "delivered", evidence_call="Q3 FY26")], ("Q3 FY26", "Q2 FY26", "Q1 FY26"))
+    assert P.keep_settled(new, {"promises": old})["promises"][0]["verdict"] == "delivered"
+
+
+def test_a_promise_a_rebuild_failed_to_notice_isnt_erased():
+    old = _record([_was_settled("Plant by March", "The plant opens by March.", "missed")])
+    out = P.keep_settled(_record([]), {"promises": old})
+    assert [p["claim"] for p in out["promises"]] == ["Plant by March"]
+
+
+def test_large_work_splits_into_requests_the_free_tier_accepts(monkeypatch):
+    monkeypatch.setattr(P.llm, "source_chars", lambda wanted, frugal_size=11000: min(wanted, 100))
+    batches = P._in_batches(["x" * 60, "y" * 60, "z" * 30])
+    assert len(batches) == 2 and all(len(b) <= 100 for b in batches)
+    monkeypatch.setattr(P.llm, "source_chars", lambda wanted, frugal_size=11000: wanted)
+    assert len(P._in_batches(["x" * 60, "y" * 60])) == 1
+
+
+@pytest.mark.parametrize("text,kind", [
+    ("press release on a large order from NTPC", "an order"),
+    ("press release on a strategic partnership", "a deal"),
+    ("press release on the launch of a new SUV", "a product"),
+    ("media release on the company's CSR programme", "people or recognition"),
+    ("press release dated today", "general"),
+    ("press release: unaudited financial results for Q2", "about results"),
+    # Persistent's partnership release once ranked as results because of this phrase.
+    ("press release: specialization for banking, financial services and insurance", "general"),
+])
+def test_press_releases_are_told_apart(text, kind):
+    assert kind in C.rules("Press Release", text).reason
+
+
+def test_a_dated_press_release_loses_its_date_from_the_title():
+    assert E.clean_title('A press release dated October 8, 2026, titled "International Growth Underpins Q2', "Press Release") == "International Growth Underpins Q2"
+
+
+def test_upcoming_events_keep_only_future_filed_dates(monkeypatch):
+    from datetime import datetime, timedelta
+
+    soon = (datetime.now() + timedelta(days=3)).strftime("%d-%b-%Y")
+    old = (datetime.now() - timedelta(days=3)).strftime("%d-%b-%Y")
+    pages = {
+        "corporate-board-meetings": [{"bm_date": soon, "bm_purpose": "Board Meeting", "bm_desc": "to approve the Unaudited Financial results"}, {"bm_date": soon, "bm_purpose": "Board Meeting", "bm_desc": "general business"}, {"bm_date": old, "bm_purpose": "x", "bm_desc": "y"}],
+        "corporates-corporateActions": [{"exDate": soon, "subject": "Interim Dividend - Rs 12"}, {"exDate": "-", "subject": "Nothing"}],
+    }
+    monkeypatch.setattr(nse, "fetch_json", lambda url, **k: next(v for key, v in pages.items() if key in url))
+    events = nse.upcoming_events("AAA")
+    assert sorted(e["kind"] for e in events) == ["action", "results"]
+    assert "Interim Dividend" in next(e["title"] for e in events if e["kind"] == "action")
+
+
+def _reviewable():
+    return {"claim": "Plant by March", "quote": "The plant opens by March.", "verdict": "delivered", "note": "Opened", "call": 1, "call_label": "Q1 FY26",
+            "evidence": {"quote": "It opened.", "call_label": "Q2 FY26"}}
+
+
+def test_on_the_free_tier_a_verdict_needs_a_second_reading_to_agree(monkeypatch):
+    monkeypatch.setattr(P.llm, "frugal", lambda: True)
+    monkeypatch.setattr(P.llm, "ask_json", lambda *a, **k: [{"key": "r0", "upheld": True}])
+    agreed, ignored = _reviewable(), _reviewable()
+    P.second_opinion([agreed, ignored], [])
+    assert agreed["verdict"] == "delivered" and ignored["verdict"] == "no_evidence" and ignored["overturned"]["verdict"] == "delivered"
+
+
+def test_on_the_free_tier_no_second_reading_means_unverified(monkeypatch):
+    monkeypatch.setattr(P.llm, "frugal", lambda: True)
+
+    def fail(*a, **k):
+        raise P.llm.BudgetExceeded("gone")
+
+    monkeypatch.setattr(P.llm, "ask_json", fail)
+    p = _reviewable()
+    P.second_opinion([p], [])
+    assert p["verdict"] == "no_evidence"
+
+
+@pytest.mark.parametrize("role,text,expect", [
+    ("Part-time Chairman and Independent Director", "Resignation of Mr X as Chairman of the company", True),
+    ("Executive President – Finance", "Appointment of Mr as Chief Financial Officer of the company", True),
+    ("Non-Executive Director", "Resignation of Mr X as Non-Executive Director", False),
+    ("Chairman of the Audit Committee", "Change in committee", False),
+    ("CFO of a subsidiary", "Appointment at a subsidiary", False),
+])
+def test_code_decides_who_is_a_top_executive(role, text, expect):
+    v = C.Verdict("management_change", 40, "Management change", True)
+    card = {"kind": "management_change", "person": {"name": "X", "role": role, "action": "leaving", "top_executive": False, "independent_director": True}}
+    _, score, _ = E.rescore(v, card, None, None, source_text=text)
+    assert (score >= C.TOP_AT) is expect
+
+
+def test_a_board_outcome_with_results_stays_results_when_a_model_calls_it_a_dividend():
+    v = C.Verdict("results", 90, "New quarterly results filed", True)
+    card = {"kind": "dividend", "headline": "final dividend recommended"}
+    assert E.rescore(v, card, None, None, source_text="Financial Results, Financial Statements, Dividend")[0] == "results"
+    assert E.rescore(v, card, None, None, source_text="Date of Payment of Dividend")[0] == "dividend"
+
+
+def test_a_cards_answer_is_found_whichever_model_read_it(monkeypatch):
+    text = "x" * 7000
+    seen = []
+    monkeypatch.setattr(E.llm, "cached", lambda task, tier, system, prompt: seen.append(len(prompt)) or ({"kind": "orders"} if len(seen) == 2 else None))
+    assert E.extract_card(text) == {"kind": "orders"}
+    assert seen[0] > seen[1]
+
+
+@pytest.mark.parametrize("evidence,plan", [
+    ("We are expanding the capacities of camera module from 70 million annually to 180 million over the next 15 to 18 months.", True),
+    ("The trials will start from beginning of Q3 and mass production will commence from end of Q3.", True),
+    ("This factory should become operational by end of Q3.", True),
+    ("Construction is expected to be completed by Q1 of financial year 2027.", True),
+    ("We have commenced manufacturing of telecom radios and plan to initiate exports in this fiscal.", False),
+    ("We have closed at almost 32-odd million in the current fiscal.", False),
+    ("The order book looks robust with new categories of lighting products.", False),
+    ("The plant is now operational and we will ramp up next year.", False),
+])
+def test_evidence_that_only_restates_a_plan_cant_prove_delivery(evidence, plan):
+    assert P._only_a_plan(evidence) is plan
+
+
+def test_a_promise_cant_fall_due_before_it_was_made():
+    # Dixon, on its Q4 FY26 call, said "current fiscal", meaning FY27.
+    assert not P._period_fits("Q3 FY26", "the trial is going to start in Q3 of current fiscal", "2026-03-31")
+    assert not P._period_fits("FY26", "this year", "2026-03-31")
+    assert P._period_fits("Q3 FY27", "the trial is going to start in Q3 of current fiscal", "2026-03-31")

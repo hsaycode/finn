@@ -88,6 +88,35 @@ def announcements(symbol: str | None, frm: datetime, to: datetime, ttl: float = 
     return out
 
 
+def _day(value: str | None) -> str | None:
+    """NSE writes dates as 30-Oct-2026. Empty ones arrive as a dash."""
+    try:
+        return datetime.strptime((value or "").strip(), "%d-%b-%Y").date().isoformat()
+    except ValueError:
+        return None
+
+
+def upcoming_events(symbol: str, ttl: float = 21600) -> list[dict]:
+    """Board meetings and corporate actions the company has already announced. All of it is filed, so none of it is a forecast."""
+    q = f"index=equities&symbol={urllib.parse.quote(symbol)}"
+    today = datetime.now().date().isoformat()
+    out = {}
+    for r in fetch_json(f"{BASE}/corporate-board-meetings?{q}", ttl=ttl, headers=HEADERS):
+        d = _day(r.get("bm_date"))
+        text = " ".join(str(r.get(k) or "") for k in ("bm_purpose", "bm_desc"))
+        if d and d >= today:
+            results = re.search(r"financial results|results of the company", text, re.I)
+            if results or (d, "results") not in out:
+                out[d, "results" if results else "board"] = "Results due: board meets" if results else "Board meeting"
+            if results:
+                out.pop((d, "board"), None)
+    for r in fetch_json(f"{BASE}/corporates-corporateActions?{q}", ttl=ttl, headers=HEADERS):
+        d = _day(r.get("exDate"))
+        if d and d >= today:
+            out[d, "action"] = f"Goes ex: {(r.get('subject') or 'corporate action').strip()}"
+    return [{"symbol": symbol, "date": d, "kind": k, "title": t} for (d, k), t in sorted(out.items())]
+
+
 @dataclass
 class Quarter:
     symbol: str

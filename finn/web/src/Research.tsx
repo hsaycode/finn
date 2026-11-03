@@ -207,7 +207,7 @@ function TrackRecord({ d }: { d: Dossier }) {
     return (
       <section className="sec" id="record">
         <h2>Track record</h2>
-        <p className="empty-note">No promise record for this company.</p>
+        <p className="empty-note">{d.numbers_first ? "Not read yet." : "No promise record for this company."}</p>
       </section>
     );
   }
@@ -504,7 +504,7 @@ function Ask({ symbol }: { symbol: string }) {
   );
 }
 
-function DossierView({ d, onBack, open }: { d: Dossier; onBack: () => void; open: (s: string) => void }) {
+function DossierView({ d, onBack, open, working }: { d: Dossier; onBack: () => void; open: (s: string) => void; working?: string }) {
   const candidates: [string, string, boolean][] = [
     ["record", "Track record", true], ["case", "Bull / bear", !!d.arguments], ["numbers", "Numbers", true], ["peers", "Peers", !!d.peers?.rows?.length], ["balance", "Balance sheet", !!d.balance_sheet],
     ["cash", "Cash", !!d.cash], ["forces", "Forces", !!d.forces?.forces], ["business", "Business", !!d.business], ["ask", "Ask", true],
@@ -516,12 +516,22 @@ function DossierView({ d, onBack, open }: { d: Dossier; onBack: () => void; open
         <button className="link back" onClick={onBack}>← Research</button>
         <h1 className="dossier-name">{d.name}</h1>
         <p className="meta">{d.symbol}{d.business?.industry ? ` · ${d.business.industry}` : ""}{d.consolidated ? " · consolidated" : " · standalone"}</p>
+        {!working && !d.numbers_first && <a className="link summary-link" href={`/summary/${d.symbol}`}>One-page summary</a>}
       </header>
+      {working && (
+        <div className="reading" role="status">
+          <div className="pulse" aria-hidden="true" />
+          <p><b>The numbers below are ready.</b> FINN is still reading the earnings calls for the track record, which takes several minutes on the free model. You can leave and come back.</p>
+          <p className="meta">{working}…</p>
+        </div>
+      )}
+      {!working && d.numbers_first && <p className="flag">The track record isn't finished, because today's free model allowance ran out. FINN carries on when you open this company after it resets.</p>}
       <PriceBlock symbol={d.symbol} />
       <nav className="jump" aria-label="Sections">
         {sections.map(([id, label]) => <a key={id} href={`#${id}`}>{label}</a>)}
       </nav>
       {d.missing?.map((m: string) => <p key={m} className="flag">{m}</p>)}
+      {d.built_by === "groq" && <p className="meta">Read by a free model, which FINN has checked less than the companies in "Ready now". Each verdict needed a second reading to agree. Open the sources before relying on one.</p>}
       <TrackRecord d={d} />
       {d.dodged?.length > 0 && (
         <section className="sec" id="dodged">
@@ -553,7 +563,7 @@ function DossierView({ d, onBack, open }: { d: Dossier; onBack: () => void; open
 
 export function ResearchScreen({ symbol, open }: { symbol: string | null; open: (s: string | null) => void }) {
   const [q, setQ] = useState("");
-  const [state, setState] = useState<{ status: string; step?: string; error?: string; dossier?: Dossier } | null>(null);
+  const [state, setState] = useState<{ status: string; step?: string; error?: string; dossier?: Dossier; working?: string } | null>(null);
   const [ready, setReady] = useState<string[]>([]);
   const timer = useRef<number | undefined>(undefined);
 
@@ -580,6 +590,8 @@ export function ResearchScreen({ symbol, open }: { symbol: string | null; open: 
         }
         setState(s);
         if (s.status === "running") timer.current = window.setTimeout(poll, 1500);
+        // The numbers are up and the record is still being read, so the page fills itself in.
+        else if (s.working) timer.current = window.setTimeout(poll, 5000);
       } catch {
         if (alive) setState({ status: "failed", error: "Couldn't reach FINN. Check your connection." });
       }
@@ -592,7 +604,7 @@ export function ResearchScreen({ symbol, open }: { symbol: string | null; open: 
     };
   }, [symbol]);
 
-  if (symbol && state?.status === "ready" && state.dossier) return <DossierView d={state.dossier} onBack={() => open(null)} open={(s) => open(s)} />;
+  if (symbol && state?.status === "ready" && state.dossier) return <DossierView d={state.dossier} working={state.working} onBack={() => open(null)} open={(s) => open(s)} />;
 
   if (symbol && state?.status !== "failed") {
     return (
@@ -601,7 +613,7 @@ export function ResearchScreen({ symbol, open }: { symbol: string | null; open: 
         <h1 className="dossier-name">{symbol}</h1>
         <div className="pulse" aria-hidden="true" />
         <p aria-live="polite">{state?.step || "Opening"}…</p>
-        <p className="meta">The first look at a company reads its last five earnings calls and annual report, so it takes a minute or two. After that it's instant.</p>
+        <p className="meta">Pulling its filed numbers first, which takes a moment. Its earnings calls are read after that.</p>
       </div>
     );
   }

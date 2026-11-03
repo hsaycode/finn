@@ -62,12 +62,14 @@ def _event_item(r: dict) -> dict:
     return {"symbol": r["symbol"], "title": r["title"], "detail": r["reason"], "url": r["pdf_url"], "when": r["ts"]}
 
 
-def _what_matters() -> dict:
+def _what_matters(symbols: list[str] | None = None) -> dict:
     conn = db()
+    mine = symbols or [r["symbol"] for r in conn.execute("SELECT symbol FROM companies WHERE in_portfolio=1")]
+    marks = ",".join("?" for _ in mine)
     for days, label in ((1, "in the last 24 hours"), (7, "in the last 7 days"), (30, "in the last 30 days")):
         since = (datetime.now() - timedelta(days=days)).isoformat()
         rows = conn.execute(
-            "SELECT f.* FROM filings f JOIN companies c ON c.symbol=f.symbol AND c.in_portfolio=1 WHERE f.tier='top' AND f.ts>=? ORDER BY f.score DESC, f.ts DESC", (since,)
+            f"SELECT f.* FROM filings f WHERE f.symbol IN ({marks}) AND f.tier='top' AND f.ts>=? ORDER BY f.score DESC, f.ts DESC", (*mine, since)
         ).fetchall()
         items, seen = [], set()
         for r in rows:
@@ -80,10 +82,11 @@ def _what_matters() -> dict:
     return _say("Nothing across your holdings has ranked as important in the last 30 days.")
 
 
-def _moved(move_pct: float, vol_x: float) -> dict:
+def _moved(move_pct: float, vol_x: float, symbols: list[str] | None = None) -> dict:
     conn = db()
     items = []
-    for c in conn.execute("SELECT symbol FROM companies WHERE in_portfolio=1").fetchall():
+    mine = symbols or [r["symbol"] for r in conn.execute("SELECT symbol FROM companies WHERE in_portfolio=1")]
+    for c in [{"symbol": s} for s in mine]:
         rows = [dict(r) for r in conn.execute("SELECT date, close, volume FROM prices WHERE symbol=? ORDER BY date", (c["symbol"],))]
         sig = prices.signals(rows)
         if not sig:
@@ -214,23 +217,42 @@ def _company_answer(intent: str, symbol: str, text: str, ask) -> dict:
     return _company_answer("transcripts", symbol, text, ask)
 
 
-def answer(message: str, ask, move_pct: float = 5, vol_x: float = 2) -> dict:
+# A question about "my stocks" isn't a follow-up about the last company.
+_PORTFOLIO_WIDE = re.compile(r"\b(my|portfolio|holdings|across|everything|which of|what matters|what moved|movers|alerts?)\b", re.I)
+_COMPARE = re.compile(r"\b(compare|versus|vs\.?|against|next to|side by side)\b", re.I)
+
+
+def answer(message: str, ask, move_pct: float = 5, vol_x: float = 2, about: str | None = None, symbols: list[str] | None = None) -> dict:
+    """about is the company the conversation was last on, so a follow-up doesn't have to name it."""
+    reply = _reply(message, ask, move_pct, vol_x, about, symbols)
+    named = companies_in(message)
+    reply["about"] = reply.get("symbol") or (named[0] if named else about)
+    return reply
+
+
+def _reply(message: str, ask, move_pct: float, vol_x: float, about: str | None, symbols: list[str] | None) -> dict:
     """ask(symbol, question) is Ask from the API: it answers from transcripts and returns the quotes."""
     text = message.strip()
     low = text.lower()
     found = companies_in(text)
+    followup = False
+    if about and not found and not _PORTFOLIO_WIDE.search(low):
+        found, followup = [about], True
+    elif about and len(found) == 1 and found[0] != about and _COMPARE.search(low):
+        found = [about, found[0]]
     if _ADVICE.search(low):
         extra = [f"{found[0]}'s track record", f"{found[0]} results"] if found else _HELP[:2]
         return _say("I don't make buy or sell calls. I can show you what's filed and what management delivered, and the decision is yours.", suggest=extra)
-    if re.search(r"\b(compare|versus|vs\.?)\b", low) and len(found) >= 2:
+    # Two names and no question about what either said can only sensibly be a comparison.
+    if len(found) >= 2 and (_COMPARE.search(low) or not re.search(r"\b(say|said|says|guid\w+|expect\w*|why|how)\b", low)):
         return _compare(found[:3])
     if not found:
         if re.search(r"\b(what moved|moved|movers|alerts?|limits?|unusual)\b", low):
-            return _moved(move_pct, vol_x)
+            return _moved(move_pct, vol_x, symbols)
         if re.search(r"\b(promises?|track records?|credib\w+|deliver\w*)\b", low):
             return _portfolio_record()
         if re.search(r"\b(matter|today|brief|important|new|happen|update|digest)\b", low):
-            return _what_matters()
+            return _what_matters(symbols)
         m = re.search(r"\bresearch\s+([A-Za-z0-9&-]{2,20})\b", text)
         if m:
             return _say(f"Open {m[1].upper()} in Research and I'll build it.", [{"symbol": m[1].upper(), "title": f"Research {m[1].upper()}", "detail": None, "url": None, "when": None}])
@@ -238,9 +260,9 @@ def answer(message: str, ask, move_pct: float = 5, vol_x: float = 2) -> dict:
         if route:
             named = [s for c in route.get("companies") or [] if isinstance(c, str) for s in companies_in(c)]
             if route["intent"] == "what_matters":
-                return _what_matters()
+                return _what_matters(symbols)
             if route["intent"] == "moved":
-                return _moved(move_pct, vol_x)
+                return _moved(move_pct, vol_x, symbols)
             if route["intent"] == "record_all":
                 return _portfolio_record()
             if route["intent"] == "compare" and len(named) >= 2:
@@ -257,7 +279,7 @@ def answer(message: str, ask, move_pct: float = 5, vol_x: float = 2) -> dict:
         return _results(symbol)
     if re.search(r"\b(what happened|latest|filings?|news|any updates?|anything new|announce\w*)\b", low):
         return _filings(symbol)
-    if len(re.findall(r"\w+", low)) <= 2:
+    if not followup and len(re.findall(r"\w+", low)) <= 2:
         return _say(f"What would you like to know about {symbol}?", suggest=[f"{symbol} results", f"{symbol}'s track record", f"{symbol} latest filings", f"{symbol} share price"])
     if not research.load(symbol):
         return _say(f"I can only answer that from {symbol}'s earnings calls, and I haven't researched it yet.", [{"symbol": symbol, "title": f"Research {symbol}", "detail": None, "url": None, "when": None}])
